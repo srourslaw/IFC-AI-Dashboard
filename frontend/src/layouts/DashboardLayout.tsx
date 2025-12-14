@@ -9,8 +9,10 @@ import {
   ArrowDownTrayIcon,
   SunIcon,
   MoonIcon,
+  ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/outline'
 import { useAppStore } from '@/store/appStore'
+import { useAuth } from '@/contexts/AuthContext'
 import { useEffect } from 'react'
 
 const navigation = [
@@ -23,6 +25,7 @@ const navigation = [
 export function DashboardLayout() {
   const location = useLocation()
   const { theme, setTheme, currentModel } = useAppStore()
+  const { logout, userEmail } = useAuth()
 
   // Apply dark mode class to html element
   useEffect(() => {
@@ -96,6 +99,22 @@ export function DashboardLayout() {
                   <MoonIcon className="h-5 w-5" />
                 )}
               </button>
+
+              {/* User email and logout */}
+              <div className="flex items-center gap-2 pl-3 border-l border-slate-200 dark:border-slate-700">
+                {userEmail && (
+                  <span className="hidden md:block text-xs text-slate-500 dark:text-slate-400 max-w-[120px] truncate">
+                    {userEmail}
+                  </span>
+                )}
+                <button
+                  onClick={logout}
+                  className="p-2 rounded-lg text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                  title="Sign out"
+                >
+                  <ArrowRightOnRectangleIcon className="h-5 w-5" />
+                </button>
+              </div>
             </div>
           </div>
         </div>

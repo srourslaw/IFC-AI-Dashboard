@@ -4,11 +4,23 @@ import { FilesPage } from './pages/FilesPage'
 import { ViewerPage } from './pages/ViewerPage'
 import { ReviewPage } from './pages/ReviewPage'
 import { ExportPage } from './pages/ExportPage'
+import LoginPage from './pages/LoginPage'
+import ProtectedRoute from './components/ProtectedRoute'
 
 function App() {
   return (
     <Routes>
-      <Route element={<DashboardLayout />}>
+      {/* Public route - Login */}
+      <Route path="/login" element={<LoginPage />} />
+
+      {/* Protected routes - require authentication */}
+      <Route
+        element={
+          <ProtectedRoute>
+            <DashboardLayout />
+          </ProtectedRoute>
+        }
+      >
         <Route path="/" element={<FilesPage />} />
         <Route path="/viewer" element={<ViewerPage />} />
         <Route path="/review" element={<ReviewPage />} />
@@ -19,6 +31,9 @@ function App() {
         <Route path="/methodology" element={<Navigate to="/viewer" replace />} />
         <Route path="/exports" element={<Navigate to="/export" replace />} />
       </Route>
+
+      {/* Catch-all redirect to login */}
+      <Route path="*" element={<Navigate to="/login" replace />} />
     </Routes>
   )
 }
