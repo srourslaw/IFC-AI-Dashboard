@@ -223,25 +223,58 @@ const getApiBaseUrl = (): string => {
 
 class APIClient {
   private client: AxiosInstance
+  private longTimeoutClient: AxiosInstance
+  private isServerAwake: boolean = false
 
   constructor() {
-    this.client = axios.create({
+    const baseConfig = {
       baseURL: getApiBaseUrl(),
-      timeout: 120000, // 2 minutes for large IFC operations
       headers: {
         'Content-Type': 'application/json',
       },
+    }
+
+    // Standard client for quick operations (30 seconds)
+    this.client = axios.create({
+      ...baseConfig,
+      timeout: 30000,
+    })
+
+    // Long timeout client for file operations (5 minutes)
+    // Accounts for Render.com cold starts (30-60s) + large file processing
+    this.longTimeoutClient = axios.create({
+      ...baseConfig,
+      timeout: 300000,
     })
 
     // Response interceptor for error handling
-    this.client.interceptors.response.use(
-      (response) => response,
-      (error: AxiosError<{ detail?: string }>) => {
-        const message = error.response?.data?.detail || error.message || 'An error occurred'
+    const errorHandler = (error: AxiosError<{ detail?: string }>) => {
+      const message = error.response?.data?.detail || error.message || 'An error occurred'
+      // Don't show toast for timeout errors during wake-up
+      if (!error.message?.includes('timeout')) {
         toast.error(message)
-        return Promise.reject(error)
       }
-    )
+      return Promise.reject(error)
+    }
+
+    this.client.interceptors.response.use((response) => response, errorHandler)
+    this.longTimeoutClient.interceptors.response.use((response) => response, errorHandler)
+  }
+
+  // Wake up the server if it's in cold start state (Render.com free tier)
+  private async ensureServerAwake(): Promise<void> {
+    if (this.isServerAwake) return
+
+    try {
+      // Use a long timeout for the wake-up call
+      await axios.get(`${getApiBaseUrl()}/health`, { timeout: 120000 })
+      this.isServerAwake = true
+      // Reset after 10 minutes of inactivity
+      setTimeout(() => { this.isServerAwake = false }, 600000)
+    } catch {
+      // Server might still be waking up, continue anyway
+      console.warn('Server wake-up check failed, continuing...')
+    }
   }
 
   // ===========================================================================
@@ -268,10 +301,13 @@ class APIClient {
     size_mb: number
     path: string
   }>> {
+    // Wake up server before upload (Render.com cold start)
+    await this.ensureServerAwake()
+
     const formData = new FormData()
     formData.append('file', file)
 
-    const { data } = await this.client.post('/files/upload', formData, {
+    const { data } = await this.longTimeoutClient.post('/files/upload', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
@@ -291,7 +327,10 @@ class APIClient {
   }
 
   async loadFile(fileId: string): Promise<APIResponse> {
-    const { data } = await this.client.post(`/files/${fileId}/load`)
+    // Wake up server before load (Render.com cold start)
+    await this.ensureServerAwake()
+    // Use long timeout for large IFC files
+    const { data } = await this.longTimeoutClient.post(`/files/${fileId}/load`)
     return data
   }
 
@@ -424,7 +463,8 @@ class APIClient {
   // ===========================================================================
 
   async getAnalytics(fileId?: string): Promise<ModelAnalytics> {
-    const { data } = await this.client.get('/analytics', {
+    // Use long timeout for large IFC file analytics
+    const { data } = await this.longTimeoutClient.get('/analytics', {
       params: fileId ? { file_id: fileId } : undefined,
     })
     return data
@@ -435,7 +475,8 @@ class APIClient {
   // ===========================================================================
 
   async getMethodologyAnalysis(fileId?: string): Promise<MethodologyAnalysis> {
-    const { data } = await this.client.get('/methodology/analyze', {
+    // Use long timeout for methodology generation on large IFC files
+    const { data } = await this.longTimeoutClient.get('/methodology/analyze', {
       params: fileId ? { file_id: fileId } : undefined,
     })
     return data
@@ -490,7 +531,8 @@ class APIClient {
     message: string
     summary: MethodologyAnalysis['analysis']
   }> {
-    const { data } = await this.client.post('/methodology/regenerate', null, {
+    // Use long timeout for methodology regeneration on large IFC files
+    const { data } = await this.longTimeoutClient.post('/methodology/regenerate', null, {
       params: fileId ? { file_id: fileId } : undefined,
     })
     return data
