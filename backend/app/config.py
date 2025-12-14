@@ -16,8 +16,17 @@ class Settings(BaseSettings):
     API_VERSION: str = "1.0.0"
     API_DESCRIPTION: str = "Enterprise-grade API for IFC building model analysis"
 
-    # CORS Settings
-    CORS_ORIGINS: List[str] = ["http://localhost:5176", "http://localhost:5173", "http://localhost:3000", "http://127.0.0.1:5176"]
+    # CORS Settings - includes Vercel deployment URLs
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:5176",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5176",
+        "https://ifc-ai-dashboard.vercel.app",
+        "https://ifc-ai-dashboard-hussein-srours-projects.vercel.app",
+        "https://ifc-ai-dashboard-a14quqmhq-hussein-srours-projects.vercel.app",
+        "https://*.vercel.app",  # Allow all Vercel preview URLs
+    ]
 
     # File Settings - uploads folder for IFC files
     IFC_DIRECTORY: Path = Path(__file__).parent.parent.parent / "uploads"
