@@ -1,5 +1,5 @@
 /**
- * Statistics Card Component
+ * Statistics Card Component - Light mode by default with dark mode support
  */
 import { ReactNode } from 'react'
 import { cn, formatNumber } from '@/lib/utils'
@@ -30,19 +30,19 @@ export function StatCard({
   color = 'primary',
 }: StatCardProps) {
   const colorClasses = {
-    primary: 'from-primary-500/10 to-transparent',
-    success: 'from-success-500/10 to-transparent',
-    warning: 'from-warning-500/10 to-transparent',
-    danger: 'from-danger-500/10 to-transparent',
-    info: 'from-cyan-500/10 to-transparent',
+    primary: 'from-blue-500/5 to-transparent dark:from-blue-500/10',
+    success: 'from-emerald-500/5 to-transparent dark:from-emerald-500/10',
+    warning: 'from-amber-500/5 to-transparent dark:from-amber-500/10',
+    danger: 'from-red-500/5 to-transparent dark:from-red-500/10',
+    info: 'from-cyan-500/5 to-transparent dark:from-cyan-500/10',
   }
 
   const iconColors = {
-    primary: 'text-primary-400 bg-primary-500/10',
-    success: 'text-success-400 bg-success-500/10',
-    warning: 'text-warning-400 bg-warning-500/10',
-    danger: 'text-danger-400 bg-danger-500/10',
-    info: 'text-cyan-400 bg-cyan-500/10',
+    primary: 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/30',
+    success: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-900/30',
+    warning: 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30',
+    danger: 'text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30',
+    info: 'text-cyan-600 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-900/30',
   }
 
   return (
@@ -58,16 +58,16 @@ export function StatCard({
       <div className="relative">
         <div className="flex items-start justify-between">
           <div className="flex-1">
-            <p className="text-sm font-medium text-secondary-400">{title}</p>
+            <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{title}</p>
             {loading ? (
-              <div className="h-8 w-24 bg-secondary-800 rounded animate-pulse mt-2" />
+              <div className="h-8 w-24 bg-slate-200 dark:bg-slate-700 rounded animate-pulse mt-2" />
             ) : (
-              <p className="text-3xl font-bold text-secondary-100 mt-2">
+              <p className="text-3xl font-bold text-slate-900 dark:text-slate-100 mt-2">
                 {typeof value === 'number' ? formatNumber(value) : value}
               </p>
             )}
             {subtitle && (
-              <p className="text-sm text-secondary-500 mt-1">{subtitle}</p>
+              <p className="text-sm text-slate-500 dark:text-slate-500 mt-1">{subtitle}</p>
             )}
           </div>
 
@@ -83,7 +83,7 @@ export function StatCard({
             <span
               className={cn(
                 'flex items-center gap-0.5 text-sm font-medium',
-                trend.isPositive ? 'text-success-400' : 'text-danger-400'
+                trend.isPositive ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'
               )}
             >
               {trend.isPositive ? (
@@ -93,7 +93,7 @@ export function StatCard({
               )}
               {Math.abs(trend.value)}%
             </span>
-            <span className="text-sm text-secondary-500">vs last model</span>
+            <span className="text-sm text-slate-500 dark:text-slate-500">vs last model</span>
           </div>
         )}
       </div>
@@ -112,13 +112,13 @@ export function MiniStat({ label, value, icon, className }: MiniStatProps) {
   return (
     <div className={cn('flex items-center gap-3', className)}>
       {icon && (
-        <div className="p-2 rounded-lg bg-secondary-800/50 text-secondary-400">
+        <div className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
           {icon}
         </div>
       )}
       <div>
-        <p className="text-xs text-secondary-500 uppercase tracking-wide">{label}</p>
-        <p className="text-lg font-semibold text-secondary-100">
+        <p className="text-xs text-slate-500 dark:text-slate-500 uppercase tracking-wide">{label}</p>
+        <p className="text-lg font-semibold text-slate-900 dark:text-slate-100">
           {typeof value === 'number' ? formatNumber(value) : value}
         </p>
       </div>

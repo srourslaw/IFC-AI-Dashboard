@@ -1,5 +1,5 @@
 /**
- * Loading Spinner Component
+ * Loading Spinner Component - Light mode by default with dark mode support
  */
 import { cn } from '@/lib/utils'
 
@@ -19,7 +19,7 @@ export function LoadingSpinner({ size = 'md', className }: LoadingSpinnerProps) 
   return (
     <div
       className={cn(
-        'animate-spin rounded-full border-primary-500 border-t-transparent',
+        'animate-spin rounded-full border-blue-500 border-t-transparent',
         sizeClasses[size],
         className
       )}
@@ -33,10 +33,10 @@ interface LoadingOverlayProps {
 
 export function LoadingOverlay({ message = 'Loading...' }: LoadingOverlayProps) {
   return (
-    <div className="absolute inset-0 bg-secondary-950/80 backdrop-blur-sm flex items-center justify-center z-50">
+    <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50">
       <div className="flex flex-col items-center gap-4">
         <LoadingSpinner size="xl" />
-        <p className="text-secondary-300 text-sm font-medium animate-pulse">{message}</p>
+        <p className="text-slate-600 dark:text-slate-300 text-sm font-medium animate-pulse">{message}</p>
       </div>
     </div>
   )
@@ -50,7 +50,7 @@ export function Skeleton({ className }: SkeletonProps) {
   return (
     <div
       className={cn(
-        'bg-secondary-800 rounded animate-pulse',
+        'bg-slate-200 dark:bg-slate-700 rounded animate-pulse',
         className
       )}
     />

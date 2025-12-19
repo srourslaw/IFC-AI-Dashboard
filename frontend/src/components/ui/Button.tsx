@@ -1,5 +1,5 @@
 /**
- * Button Component
+ * Button Component - Light mode by default with dark mode support
  */
 import { ButtonHTMLAttributes, forwardRef } from 'react'
 import { cn } from '@/lib/utils'
@@ -15,15 +15,15 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'primary', size = 'md', loading, leftIcon, rightIcon, children, disabled, ...props }, ref) => {
-    const baseClasses = 'inline-flex items-center justify-center gap-2 font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-secondary-900 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg'
+    const baseClasses = 'inline-flex items-center justify-center gap-2 font-medium transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-offset-white dark:focus:ring-offset-slate-900 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg'
 
     const variantClasses = {
-      primary: 'bg-primary-600 text-white hover:bg-primary-500 focus:ring-primary-500 active:bg-primary-700',
-      secondary: 'bg-secondary-800 text-secondary-100 hover:bg-secondary-700 focus:ring-secondary-500 border border-secondary-700',
-      ghost: 'text-secondary-400 hover:text-secondary-100 hover:bg-secondary-800/50',
-      danger: 'bg-danger-600 text-white hover:bg-danger-500 focus:ring-danger-500',
-      success: 'bg-success-600 text-white hover:bg-success-500 focus:ring-success-500',
-      outline: 'border-2 border-primary-500 text-primary-400 hover:bg-primary-500/10 focus:ring-primary-500',
+      primary: 'bg-blue-600 text-white hover:bg-blue-700 focus:ring-blue-500 active:bg-blue-800',
+      secondary: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600 focus:ring-slate-400 border border-slate-200 dark:border-slate-600',
+      ghost: 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-800',
+      danger: 'bg-red-600 text-white hover:bg-red-700 focus:ring-red-500',
+      success: 'bg-emerald-600 text-white hover:bg-emerald-700 focus:ring-emerald-500',
+      outline: 'border-2 border-blue-500 text-blue-600 dark:text-blue-400 hover:bg-blue-50 dark:hover:bg-blue-900/20 focus:ring-blue-500',
     }
 
     const sizeClasses = {

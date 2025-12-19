@@ -5,6 +5,7 @@ import { Outlet, NavLink, useLocation } from 'react-router-dom'
 import {
   FolderIcon,
   CubeIcon,
+  Squares2X2Icon,
   DocumentCheckIcon,
   ArrowDownTrayIcon,
   SunIcon,
@@ -18,6 +19,7 @@ import { useEffect } from 'react'
 const navigation = [
   { name: 'Files', href: '/', icon: FolderIcon },
   { name: 'Viewer', href: '/viewer', icon: CubeIcon },
+  { name: 'Methodology', href: '/methodology', icon: Squares2X2Icon },
   { name: 'Review', href: '/review', icon: DocumentCheckIcon },
   { name: 'Export', href: '/export', icon: ArrowDownTrayIcon },
 ]

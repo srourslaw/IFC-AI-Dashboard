@@ -44,6 +44,27 @@ class StageUpdateRequest(BaseModel):
     instructions: Optional[List[str]] = None
 
 
+class GridSelection(BaseModel):
+    """Grid-based area selection (e.g., Grid 2-8 / A-J)"""
+    v_start: str  # Number axis start (e.g., "2")
+    v_end: str    # Number axis end (e.g., "8")
+    u_start: str  # Letter axis start (e.g., "A")
+    u_end: str    # Letter axis end (e.g., "J")
+
+
+class ErectionSequenceDefinition(BaseModel):
+    """User-defined erection sequence based on grid references"""
+    sequence_number: int
+    name: str
+    grid_selection: GridSelection
+    splits: List[str] = []  # V-axis split points (e.g., ["5"] splits 2-8 into 2-5 and 5-8)
+
+
+class GenerateFromSequencesRequest(BaseModel):
+    """Request to generate stages from user-defined sequences"""
+    sequences: List[ErectionSequenceDefinition]
+
+
 @router.get("/analyze")
 async def analyze_model(file_id: Optional[str] = Query(None)):
     """
@@ -375,6 +396,90 @@ async def get_all_express_ids(file_id: Optional[str] = Query(None)):
     express_ids = service.get_all_express_ids()
 
     return {
+        "express_ids": express_ids,
+        "count": len(express_ids)
+    }
+
+
+@router.post("/generate-from-sequences")
+async def generate_from_sequences(
+    request: GenerateFromSequencesRequest,
+    file_id: Optional[str] = Query(None)
+):
+    """
+    Generate erection stages from user-defined sequences.
+    This is the Rosehill-style approach where user defines:
+    - Erection areas by grid reference (e.g., Grid 2-8 / A-J)
+    - Split points to subdivide areas (e.g., split at Grid 5)
+
+    System then generates stages: Columns first, then Beams for each sub-area.
+
+    Returns:
+    - stages: The generated erection stages with express_ids
+    - section_ids: ALL elements in the grid area (full building section)
+    """
+    if not file_id:
+        if not ifc_service._current_model_id:
+            raise HTTPException(status_code=400, detail="No model loaded")
+        file_id = ifc_service._current_model_id
+
+    service = get_methodology_service(file_id)
+
+    # Generate stages from user sequences
+    generated_stages = service.generate_from_user_sequences(
+        [seq.model_dump() for seq in request.sequences]
+    )
+
+    # Get ALL elements in the grid area (full building section)
+    # This includes walls, slabs, roofing, cladding, etc.
+    section_ids = []
+    if request.sequences:
+        # Use the first sequence's grid selection for the section bounds
+        first_seq = request.sequences[0]
+        grid = first_seq.grid_selection
+        section_ids = service.get_all_ifc_elements_by_grid_area(
+            grid.v_start, grid.v_end, grid.u_start, grid.u_end
+        )
+
+    # Update cache
+    _methodology_cache[file_id] = service
+
+    return {
+        "success": True,
+        "message": f"Generated {len(generated_stages)} stages from {len(request.sequences)} sequences",
+        "stages": generated_stages,
+        "section_ids": section_ids,  # ALL elements in the grid area
+        "section_count": len(section_ids),
+        "summary": service.get_analysis_summary()
+    }
+
+
+@router.get("/grid-express-ids")
+async def get_grid_area_express_ids(
+    v_start: str = Query(..., description="V-axis start (e.g., '2')"),
+    v_end: str = Query(..., description="V-axis end (e.g., '8')"),
+    u_start: str = Query(..., description="U-axis start (e.g., 'A')"),
+    u_end: str = Query(..., description="U-axis end (e.g., 'J')"),
+    element_type: Optional[str] = Query(None, description="Filter by element type: columns, beams, etc."),
+    file_id: Optional[str] = Query(None)
+):
+    """
+    Get ExpressIDs for elements within a grid area.
+    Used for 3D viewer highlighting of specific grid regions.
+    """
+    if not file_id:
+        if not ifc_service._current_model_id:
+            raise HTTPException(status_code=400, detail="No model loaded")
+        file_id = ifc_service._current_model_id
+
+    service = get_methodology_service(file_id)
+    express_ids = service.get_express_ids_by_grid_area(
+        v_start, v_end, u_start, u_end, element_type
+    )
+
+    return {
+        "grid_area": f"Grid {v_start}-{v_end} / {u_start}-{u_end}",
+        "element_type": element_type or "all",
         "express_ids": express_ids,
         "count": len(express_ids)
     }

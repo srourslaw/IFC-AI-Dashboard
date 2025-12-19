@@ -1,5 +1,5 @@
 /**
- * Badge Component
+ * Badge Component - Light mode by default with dark mode support
  */
 import { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
@@ -15,12 +15,12 @@ interface BadgeProps {
 
 export function Badge({ children, variant = 'default', size = 'md', className, dot, pulse }: BadgeProps) {
   const variantClasses = {
-    default: 'bg-secondary-700 text-secondary-200',
-    primary: 'bg-primary-500/20 text-primary-300',
-    success: 'bg-success-500/20 text-success-300',
-    warning: 'bg-warning-500/20 text-warning-300',
-    danger: 'bg-danger-500/20 text-danger-300',
-    info: 'bg-cyan-500/20 text-cyan-300',
+    default: 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300',
+    primary: 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300',
+    success: 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300',
+    warning: 'bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300',
+    danger: 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300',
+    info: 'bg-cyan-50 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-300',
   }
 
   const sizeClasses = {
@@ -30,12 +30,12 @@ export function Badge({ children, variant = 'default', size = 'md', className, d
   }
 
   const dotColors = {
-    default: 'bg-secondary-400',
-    primary: 'bg-primary-400',
-    success: 'bg-success-400',
-    warning: 'bg-warning-400',
-    danger: 'bg-danger-400',
-    info: 'bg-cyan-400',
+    default: 'bg-slate-400',
+    primary: 'bg-blue-500',
+    success: 'bg-emerald-500',
+    warning: 'bg-amber-500',
+    danger: 'bg-red-500',
+    info: 'bg-cyan-500',
   }
 
   return (

@@ -64,13 +64,14 @@ export interface IFCViewerHandle {
   setStoreyVisibility: (storeyName: string, visible: boolean) => void
   setAllStoreysVisibility: (visible: boolean) => void
   getStoreys: () => StoreyInfo[]
-  highlightElements: (expressIds: number[], color?: number) => void
+  highlightElements: (expressIds: number[], color?: number, opacity?: number) => void
   clearHighlights: () => void
   setElementsOpacity: (expressIds: number[], opacity: number) => void
   resetElementsAppearance: () => void
   getAllMeshExpressIds: () => number[]
   hideAllMeshes: () => void
   showAllMeshes: () => void
+  showOnlyElements: (expressIds: number[]) => void  // Show only specified elements, hide all others
 }
 
 interface IFCViewerProps {
@@ -124,7 +125,7 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
         meshCount: s.meshes.length,
         visible: s.visible
       })),
-      highlightElements: (expressIds: number[], color: number = 0x00ff00) => {
+      highlightElements: (expressIds: number[], color: number = 0x00ff00, opacity: number = 1) => {
         const expressIdSet = new Set(expressIds)
         allMeshesRef.current.forEach(mesh => {
           if (expressIdSet.has(mesh.userData.expressID)) {
@@ -132,14 +133,18 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
             if (!originalMaterialsRef.current.has(mesh)) {
               originalMaterialsRef.current.set(mesh, mesh.material)
             }
-            // Create highlight material
+            // Make the mesh visible
+            mesh.visible = true
+            // Create highlight material with specified opacity
             const highlightMaterial = new THREE.MeshStandardMaterial({
               color: color,
               emissive: color,
-              emissiveIntensity: 0.3,
+              emissiveIntensity: opacity < 1 ? 0.1 : 0.3,
               roughness: 0.4,
               metalness: 0.1,
               side: THREE.DoubleSide,
+              transparent: opacity < 1,
+              opacity: opacity,
             })
             mesh.material = highlightMaterial
           }
@@ -209,6 +214,13 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
       showAllMeshes: () => {
         allMeshesRef.current.forEach(mesh => {
           mesh.visible = true
+        })
+      },
+      showOnlyElements: (expressIds: number[]) => {
+        // Show only the specified elements, hide all others
+        const expressIdSet = new Set(expressIds)
+        allMeshesRef.current.forEach(mesh => {
+          mesh.visible = expressIdSet.has(mesh.userData.expressID)
         })
       }
     }))

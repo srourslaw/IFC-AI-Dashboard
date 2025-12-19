@@ -115,8 +115,8 @@ class ErectionStage:
     sequence_order: int = 0
     instructions: List[str] = field(default_factory=list)
 
-    def to_dict(self):
-        return {
+    def to_dict(self, include_express_ids: bool = False):
+        result = {
             'stage_id': self.stage_id,
             'zone_id': self.zone_id,
             'name': self.name,
@@ -127,6 +127,11 @@ class ErectionStage:
             'sequence_order': self.sequence_order,
             'instructions': self.instructions
         }
+        # For user-generated stages, elements are ExpressIDs - include them
+        if include_express_ids and self.elements:
+            # Convert to integers if they are numeric strings
+            result['express_ids'] = [int(e) for e in self.elements if str(e).isdigit()]
+        return result
 
 
 class ErectionMethodologyService:
@@ -973,3 +978,483 @@ class ErectionMethodologyService:
     def get_all_express_ids(self) -> List[int]:
         """Get all structural element ExpressIDs"""
         return [elem.express_id for elem in self.elements.values()]
+
+    def get_express_ids_by_grid_area(
+        self,
+        v_start: str,
+        v_end: str,
+        u_start: str,
+        u_end: str,
+        element_type: str = None
+    ) -> List[int]:
+        """
+        Get ExpressIDs for elements within a grid area.
+        Grid area is defined by V-axis range (numbers) and U-axis range (letters).
+
+        Uses a robust approach that works even if grid axis positions are incorrect:
+        1. First tries to use valid grid axis positions
+        2. Falls back to proportional division based on total grid count
+        """
+        # Get all V and U axes sorted by position or tag
+        v_axes = sorted(
+            [a for k, a in self.grid_axes.items() if a.direction == 'V'],
+            key=lambda a: (int(a.tag) if a.tag.isdigit() else 0, a.position)
+        )
+        u_axes = sorted(
+            [a for k, a in self.grid_axes.items() if a.direction == 'U'],
+            key=lambda a: (ord(a.tag[0].upper()) if a.tag else 0, a.position)
+        )
+
+        # Check if grid positions are valid (not all the same)
+        v_pos_set = set(a.position for a in v_axes) if v_axes else set()
+        u_pos_set = set(a.position for a in u_axes) if u_axes else set()
+        grid_positions_valid = len(v_pos_set) > 1 and len(u_pos_set) > 1
+
+        if grid_positions_valid:
+            # Use grid axis positions directly
+            return self._get_express_ids_by_axis_positions(
+                v_start, v_end, u_start, u_end, v_axes, u_axes, element_type
+            )
+        else:
+            # Use proportional coordinate-based approach
+            return self._get_express_ids_by_proportional_grid(
+                v_start, v_end, u_start, u_end, v_axes, u_axes, element_type
+            )
+
+    def _get_express_ids_by_axis_positions(
+        self,
+        v_start: str, v_end: str,
+        u_start: str, u_end: str,
+        v_axes: List[GridAxis], u_axes: List[GridAxis],
+        element_type: str = None
+    ) -> List[int]:
+        """Use actual grid axis positions for filtering"""
+        v_positions = []
+        u_positions = []
+
+        for axis in v_axes:
+            if axis.tag in [v_start, v_end]:
+                v_positions.append(axis.position)
+        for axis in u_axes:
+            if axis.tag in [u_start, u_end]:
+                u_positions.append(axis.position)
+
+        if len(v_positions) < 2 or len(u_positions) < 2:
+            return self._get_express_ids_by_proportional_grid(
+                v_start, v_end, u_start, u_end, v_axes, u_axes, element_type
+            )
+
+        x_min, x_max = min(v_positions), max(v_positions)
+        y_min, y_max = min(u_positions), max(u_positions)
+
+        # Check if positions have meaningful spread (at least 1m difference)
+        if abs(x_max - x_min) < 1000 or abs(y_max - y_min) < 1000:
+            return self._get_express_ids_by_proportional_grid(
+                v_start, v_end, u_start, u_end, v_axes, u_axes, element_type
+            )
+
+        tolerance = 500
+
+        express_ids = []
+        for elem in self.elements.values():
+            if (x_min - tolerance <= elem.x <= x_max + tolerance and
+                y_min - tolerance <= elem.y <= y_max + tolerance):
+                if element_type:
+                    ifc_types = self.STRUCTURAL_TYPES.get(element_type, [])
+                    if elem.ifc_type not in ifc_types:
+                        continue
+                express_ids.append(elem.express_id)
+
+        return express_ids
+
+    def _get_express_ids_by_proportional_grid(
+        self,
+        v_start: str, v_end: str,
+        u_start: str, u_end: str,
+        v_axes: List[GridAxis], u_axes: List[GridAxis],
+        element_type: str = None
+    ) -> List[int]:
+        """
+        Use proportional grid division based on element bounds.
+        This works when IFC grid positions are invalid.
+        """
+        if not self.elements:
+            return []
+
+        # Get element bounds
+        xs = [e.x for e in self.elements.values()]
+        ys = [e.y for e in self.elements.values()]
+
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        x_range = x_max - x_min if x_max > x_min else 1
+        y_range = y_max - y_min if y_max > y_min else 1
+
+        # Get V axis tags and their indices (numbers)
+        v_tags = sorted([a.tag for a in v_axes], key=lambda t: int(t) if t.isdigit() else 0)
+        # Get U axis tags and their indices (letters)
+        u_tags = sorted([a.tag for a in u_axes], key=lambda t: ord(t[0].upper()) if t else 0)
+
+        if not v_tags or not u_tags:
+            # No grid axes, use all elements
+            return self._filter_by_type(list(self.elements.values()), element_type)
+
+        # Calculate proportional bounds for V (X direction)
+        try:
+            v_start_idx = v_tags.index(v_start) if v_start in v_tags else 0
+            v_end_idx = v_tags.index(v_end) if v_end in v_tags else len(v_tags) - 1
+        except:
+            v_start_idx = 0
+            v_end_idx = len(v_tags) - 1
+
+        # Calculate proportional bounds for U (Y direction)
+        try:
+            u_start_idx = u_tags.index(u_start) if u_start in u_tags else 0
+            u_end_idx = u_tags.index(u_end) if u_end in u_tags else len(u_tags) - 1
+        except:
+            u_start_idx = 0
+            u_end_idx = len(u_tags) - 1
+
+        # Ensure proper ordering
+        v_start_idx, v_end_idx = min(v_start_idx, v_end_idx), max(v_start_idx, v_end_idx)
+        u_start_idx, u_end_idx = min(u_start_idx, u_end_idx), max(u_start_idx, u_end_idx)
+
+        # Calculate coordinate bounds as proportions of the building
+        num_v_divisions = len(v_tags)
+        num_u_divisions = len(u_tags)
+
+        # Add tolerance (extra half grid on each side)
+        x_start = x_min + (v_start_idx / num_v_divisions) * x_range - (x_range / num_v_divisions / 2)
+        x_end = x_min + ((v_end_idx + 1) / num_v_divisions) * x_range + (x_range / num_v_divisions / 2)
+        y_start = y_min + (u_start_idx / num_u_divisions) * y_range - (y_range / num_u_divisions / 2)
+        y_end = y_min + ((u_end_idx + 1) / num_u_divisions) * y_range + (y_range / num_u_divisions / 2)
+
+        # Filter elements by coordinate bounds
+        express_ids = []
+        for elem in self.elements.values():
+            if x_start <= elem.x <= x_end and y_start <= elem.y <= y_end:
+                if element_type:
+                    ifc_types = self.STRUCTURAL_TYPES.get(element_type, [])
+                    if elem.ifc_type not in ifc_types:
+                        continue
+                express_ids.append(elem.express_id)
+
+        return express_ids
+
+    def _filter_by_type(self, elements: List, element_type: str = None) -> List[int]:
+        """Filter elements by type and return ExpressIDs"""
+        if not element_type:
+            return [e.express_id for e in elements]
+
+        ifc_types = self.STRUCTURAL_TYPES.get(element_type, [])
+        return [e.express_id for e in elements if e.ifc_type in ifc_types]
+
+    def _get_express_ids_by_grid_tags(
+        self,
+        v_start: str,
+        v_end: str,
+        u_start: str,
+        u_end: str,
+        element_type: str = None
+    ) -> List[int]:
+        """
+        Fallback method to get elements by grid cell tags when axis positions aren't found.
+        """
+        # Get V (number) range
+        try:
+            v_start_num = int(v_start)
+            v_end_num = int(v_end)
+            v_range = range(min(v_start_num, v_end_num), max(v_start_num, v_end_num) + 1)
+            v_tags = [str(n).zfill(2) if len(v_start) > 1 else str(n) for n in v_range]
+        except ValueError:
+            v_tags = [v_start, v_end]
+
+        # Get U (letter) range
+        u_start_ord = ord(u_start.upper())
+        u_end_ord = ord(u_end.upper())
+        u_tags = [chr(c) for c in range(min(u_start_ord, u_end_ord), max(u_start_ord, u_end_ord) + 1)]
+
+        # Find elements in matching grid cells
+        express_ids = []
+        for elem in self.elements.values():
+            if elem.grid_cell:
+                parts = elem.grid_cell.split('-')
+                if len(parts) == 2:
+                    cell_u, cell_v = parts[0], parts[1]
+                    if cell_u in u_tags and cell_v in v_tags:
+                        if element_type:
+                            ifc_types = self.STRUCTURAL_TYPES.get(element_type, [])
+                            if elem.ifc_type not in ifc_types:
+                                continue
+                        express_ids.append(elem.express_id)
+
+        return express_ids
+
+    def generate_from_user_sequences(self, sequences: List[Dict]) -> List[Dict]:
+        """
+        Generate erection stages from user-defined sequences.
+        This is the Rosehill-style approach:
+        - User defines erection areas by grid reference
+        - User specifies split points to subdivide areas
+        - System generates stages: Columns first, then Beams for each sub-area
+
+        Sequences format:
+        [
+            {
+                "sequence_number": 1,
+                "name": "Sequence 1",
+                "grid_selection": {"v_start": "2", "v_end": "8", "u_start": "A", "u_end": "J"},
+                "splits": ["5"]  # Split at Grid 5
+            }
+        ]
+
+        This generates:
+        - Stage 1.1: Grid 2-5 / A-J Columns
+        - Stage 1.2: Grid 2-5 / A-J Beams
+        - Stage 1.3: Grid 5-8 / A-J Columns
+        - Stage 1.4: Grid 5-8 / A-J Beams
+        """
+        # Clear existing stages and zones
+        self.stages = []
+        self.zones = {}
+
+        generated_stages = []
+        stage_order = 1
+
+        for seq in sequences:
+            seq_num = seq['sequence_number']
+            grid = seq['grid_selection']
+            splits = sorted(seq.get('splits', []), key=lambda x: int(x) if x.isdigit() else 0)
+
+            # Create list of v-axis ranges
+            v_ranges = []
+            all_v_points = [grid['v_start']] + splits + [grid['v_end']]
+
+            for i in range(len(all_v_points) - 1):
+                v_ranges.append((all_v_points[i], all_v_points[i + 1]))
+
+            # Create zone for this sequence
+            zone_id = seq_num
+            zone = ErectionZone(
+                zone_id=zone_id,
+                name=f"Grid {grid['v_start']}-{grid['v_end']} / {grid['u_start']}-{grid['u_end']}",
+                grid_cells=[],
+                x_range=(0, 0),  # Will be calculated
+                y_range=(0, 0),
+                elements=[],
+                element_counts={}
+            )
+            self.zones[zone_id] = zone
+
+            # For each v-range, generate Columns then Beams stages
+            sub_stage = 1
+            for v_start, v_end in v_ranges:
+                grid_range = f"Grid {v_start}-{v_end} / {grid['u_start']}-{grid['u_end']}"
+
+                # Get elements in this grid area
+                column_ids = self.get_express_ids_by_grid_area(
+                    v_start, v_end, grid['u_start'], grid['u_end'], 'columns'
+                )
+                beam_ids = self.get_express_ids_by_grid_area(
+                    v_start, v_end, grid['u_start'], grid['u_end'], 'beams'
+                )
+                bracing_ids = self.get_express_ids_by_grid_area(
+                    v_start, v_end, grid['u_start'], grid['u_end'], 'bracing'
+                )
+
+                # Stage X.Y - Columns
+                if column_ids:
+                    stage_id = f"{seq_num}.{sub_stage}"
+                    stage = ErectionStage(
+                        stage_id=stage_id,
+                        zone_id=zone_id,
+                        name=f"Stage {stage_id} - {grid_range} Columns",
+                        description=f"Erect all columns in {grid_range}",
+                        element_type='columns',
+                        grid_range=grid_range,
+                        elements=[str(eid) for eid in column_ids],  # Store as strings for consistency
+                        sequence_order=stage_order,
+                        instructions=self._generate_rosehill_instructions('columns', grid_range, len(column_ids), grid)
+                    )
+                    self.stages.append(stage)
+                    generated_stages.append(stage.to_dict(include_express_ids=True))
+                    sub_stage += 1
+                    stage_order += 1
+
+                # Stage X.Y - Beams (includes bracing)
+                all_beam_ids = beam_ids + bracing_ids
+                if all_beam_ids:
+                    stage_id = f"{seq_num}.{sub_stage}"
+                    stage = ErectionStage(
+                        stage_id=stage_id,
+                        zone_id=zone_id,
+                        name=f"Stage {stage_id} - {grid_range} Beams",
+                        description=f"Install all beams and bracing in {grid_range}",
+                        element_type='beams',
+                        grid_range=grid_range,
+                        elements=[str(eid) for eid in all_beam_ids],
+                        sequence_order=stage_order,
+                        instructions=self._generate_rosehill_instructions('beams', grid_range, len(all_beam_ids), grid)
+                    )
+                    self.stages.append(stage)
+                    generated_stages.append(stage.to_dict(include_express_ids=True))
+                    sub_stage += 1
+                    stage_order += 1
+
+            # Update zone with all elements from its stages
+            zone_stages = [s for s in self.stages if s.zone_id == zone_id]
+            all_zone_elements = []
+            element_counts = defaultdict(int)
+            for stage in zone_stages:
+                all_zone_elements.extend(stage.elements)
+                element_counts[stage.element_type] += len(stage.elements)
+            zone.elements = all_zone_elements
+            zone.element_counts = dict(element_counts)
+
+        return generated_stages
+
+    def _generate_rosehill_instructions(
+        self,
+        element_type: str,
+        grid_range: str,
+        count: int,
+        grid_selection: Dict
+    ) -> List[str]:
+        """
+        Generate Rosehill-style instructions for a stage.
+        """
+        u_start = grid_selection['u_start']
+        u_end = grid_selection['u_end']
+
+        if element_type == 'columns':
+            return [
+                f"Erect all {count} columns in {grid_range}",
+                f"Columns to be installed bay by bay from {u_start}-{chr(ord(u_start)+1)} through to {chr(ord(u_end)-1)}-{u_end}",
+                "Columns to be plumbed, aligned, and snug tightened",
+                "Temporary bracing to be installed as required to maintain stability",
+            ]
+        elif element_type == 'beams':
+            return [
+                f"Install all {count} beams between grids in {grid_range}",
+                f"Install beams in each bay {u_start}-{chr(ord(u_start)+1)} through {chr(ord(u_end)-1)}-{u_end}",
+                "Install wall struts, headers and cross bracing as per drawings",
+                "Snug tighten all bolts and tension bracing where applicable",
+            ]
+        else:
+            return [f"Install {count} {element_type} elements in {grid_range}"]
+
+    def get_express_ids_by_user_stage(self, stage_id: str) -> List[int]:
+        """
+        Get ExpressIDs for a user-generated stage.
+        Stage elements are stored as ExpressIDs directly.
+        """
+        for stage in self.stages:
+            if stage.stage_id == stage_id:
+                # Elements in user-generated stages are already ExpressIDs
+                return [int(eid) for eid in stage.elements if eid.isdigit()]
+        return []
+
+    def get_all_ifc_elements_by_grid_area(
+        self,
+        v_start: str,
+        v_end: str,
+        u_start: str,
+        u_end: str
+    ) -> List[int]:
+        """
+        Get ExpressIDs for ALL IFC building elements (not just structural) within a grid area.
+        This includes walls, slabs, roofing, cladding, doors, windows, MEP, etc.
+        Used to show the complete building section for a grid area.
+        """
+        # Get grid coordinate bounds using the same logic as structural elements
+        v_axes = sorted(
+            [a for a in self.grid_axes.values() if a.direction == 'V'],
+            key=lambda a: int(a.tag) if a.tag.isdigit() else ord(a.tag[0])
+        )
+        u_axes = sorted(
+            [a for a in self.grid_axes.values() if a.direction == 'U'],
+            key=lambda a: ord(a.tag[0].upper()) if a.tag else 0
+        )
+
+        # Calculate coordinate bounds using proportional method (most reliable)
+        if not self.elements:
+            return []
+
+        xs = [e.x for e in self.elements.values()]
+        ys = [e.y for e in self.elements.values()]
+        x_min, x_max = min(xs), max(xs)
+        y_min, y_max = min(ys), max(ys)
+        x_range = x_max - x_min if x_max > x_min else 1
+        y_range = y_max - y_min if y_max > y_min else 1
+
+        v_tags = sorted([a.tag for a in v_axes], key=lambda t: int(t) if t.isdigit() else 0)
+        u_tags = sorted([a.tag for a in u_axes], key=lambda t: ord(t[0].upper()) if t else 0)
+
+        if not v_tags or not u_tags:
+            return []
+
+        # Get indices for the selected range
+        try:
+            v_start_idx = v_tags.index(v_start) if v_start in v_tags else 0
+            v_end_idx = v_tags.index(v_end) if v_end in v_tags else len(v_tags) - 1
+        except:
+            v_start_idx = 0
+            v_end_idx = len(v_tags) - 1
+
+        try:
+            u_start_idx = u_tags.index(u_start) if u_start in u_tags else 0
+            u_end_idx = u_tags.index(u_end) if u_end in u_tags else len(u_tags) - 1
+        except:
+            u_start_idx = 0
+            u_end_idx = len(u_tags) - 1
+
+        v_start_idx, v_end_idx = min(v_start_idx, v_end_idx), max(v_start_idx, v_end_idx)
+        u_start_idx, u_end_idx = min(u_start_idx, u_end_idx), max(u_start_idx, u_end_idx)
+
+        num_v_divisions = len(v_tags)
+        num_u_divisions = len(u_tags)
+
+        # Calculate coordinate bounds with tolerance
+        bound_x_min = x_min + (v_start_idx / num_v_divisions) * x_range - (x_range / num_v_divisions / 2)
+        bound_x_max = x_min + ((v_end_idx + 1) / num_v_divisions) * x_range + (x_range / num_v_divisions / 2)
+        bound_y_min = y_min + (u_start_idx / num_u_divisions) * y_range - (y_range / num_u_divisions / 2)
+        bound_y_max = y_min + ((u_end_idx + 1) / num_u_divisions) * y_range + (y_range / num_u_divisions / 2)
+
+        # Now scan ALL IFC building elements (not just structural)
+        all_building_types = [
+            'IfcWall', 'IfcWallStandardCase', 'IfcCurtainWall',
+            'IfcSlab', 'IfcRoof',
+            'IfcColumn', 'IfcBeam', 'IfcMember', 'IfcPlate',
+            'IfcFooting', 'IfcPile',
+            'IfcStair', 'IfcStairFlight', 'IfcRamp', 'IfcRampFlight',
+            'IfcRailing',
+            'IfcDoor', 'IfcWindow',
+            'IfcCovering',
+            'IfcBuildingElementProxy',
+            'IfcDistributionElement', 'IfcFlowSegment', 'IfcFlowTerminal',
+            'IfcFurnishingElement', 'IfcFurniture',
+        ]
+
+        express_ids = []
+
+        for ifc_type in all_building_types:
+            try:
+                elements = self.ifc.by_type(ifc_type)
+                for elem in elements:
+                    try:
+                        # Get element position
+                        if elem.ObjectPlacement:
+                            pos = placement.get_local_placement(elem.ObjectPlacement)
+                            if pos is not None:
+                                ex = pos[0][3]  # X coordinate
+                                ey = pos[1][3]  # Y coordinate
+
+                                # Check if within grid bounds
+                                if bound_x_min <= ex <= bound_x_max and bound_y_min <= ey <= bound_y_max:
+                                    express_ids.append(elem.id())
+                    except:
+                        continue
+            except:
+                continue
+
+        return list(set(express_ids))  # Remove duplicates

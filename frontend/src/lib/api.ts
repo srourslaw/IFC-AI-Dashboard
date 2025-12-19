@@ -109,6 +109,7 @@ export interface ErectionStage {
   element_count: number
   sequence_order: number
   instructions: string[]
+  express_ids?: number[]  // Express IDs for 3D viewer (included in user-generated stages)
 }
 
 export interface MethodologyAnalysis {
@@ -576,6 +577,61 @@ class APIClient {
       responseType: 'blob',
     })
     return response.data
+  }
+
+  // User-defined erection sequences (Rosehill-style)
+  async generateFromSequences(
+    sequences: {
+      sequence_number: number
+      name: string
+      grid_selection: {
+        v_start: string
+        v_end: string
+        u_start: string
+        u_end: string
+      }
+      splits: string[]
+    }[],
+    fileId?: string
+  ): Promise<{
+    success: boolean
+    message: string
+    stages: ErectionStage[]
+    section_ids: number[]     // ALL elements in the grid area (full building section)
+    section_count: number
+    summary: MethodologyAnalysis['analysis']
+  }> {
+    const { data } = await this.longTimeoutClient.post('/methodology/generate-from-sequences',
+      { sequences },
+      { params: fileId ? { file_id: fileId } : undefined }
+    )
+    return data
+  }
+
+  async getGridAreaExpressIds(
+    vStart: string,
+    vEnd: string,
+    uStart: string,
+    uEnd: string,
+    elementType?: string,
+    fileId?: string
+  ): Promise<{
+    grid_area: string
+    element_type: string
+    express_ids: number[]
+    count: number
+  }> {
+    const { data } = await this.client.get('/methodology/grid-express-ids', {
+      params: {
+        v_start: vStart,
+        v_end: vEnd,
+        u_start: uStart,
+        u_end: uEnd,
+        ...(elementType && { element_type: elementType }),
+        ...(fileId && { file_id: fileId }),
+      },
+    })
+    return data
   }
 
   // ===========================================================================
