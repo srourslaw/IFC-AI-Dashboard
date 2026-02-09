@@ -592,7 +592,8 @@ class APIClient {
       }
       splits: string[]
     }[],
-    fileId?: string
+    fileId?: string,
+    includeFootings: boolean = true
   ): Promise<{
     success: boolean
     message: string
@@ -602,7 +603,7 @@ class APIClient {
     summary: MethodologyAnalysis['analysis']
   }> {
     const { data } = await this.longTimeoutClient.post('/methodology/generate-from-sequences',
-      { sequences },
+      { sequences, include_footings: includeFootings },
       { params: fileId ? { file_id: fileId } : undefined }
     )
     return data

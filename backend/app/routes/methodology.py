@@ -63,6 +63,7 @@ class ErectionSequenceDefinition(BaseModel):
 class GenerateFromSequencesRequest(BaseModel):
     """Request to generate stages from user-defined sequences"""
     sequences: List[ErectionSequenceDefinition]
+    include_footings: bool = True  # Optional: include footings in stages (default True)
 
 
 @router.get("/analyze")
@@ -427,7 +428,8 @@ async def generate_from_sequences(
 
     # Generate stages from user sequences
     generated_stages = service.generate_from_user_sequences(
-        [seq.model_dump() for seq in request.sequences]
+        [seq.model_dump() for seq in request.sequences],
+        include_footings=request.include_footings
     )
 
     # Get ALL elements in the grid area (full building section)

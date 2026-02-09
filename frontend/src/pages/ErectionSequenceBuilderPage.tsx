@@ -6,6 +6,18 @@
  * 1. Select a grid area (e.g., Grid 1-8 / B-J)
  * 2. Click "Generate Stages" - creates Columns then Beams stages
  * 3. Use playback to view each stage - ONLY that stage's elements are shown
+ *
+ * Grid Coordinate System:
+ * - U-axes: Typically letters (A, B, C...) representing horizontal grid lines
+ * - V-axes: Typically numbers (1, 2, 3...) representing vertical grid lines
+ * - Grid cells: Intersections of U and V axes (e.g., A1, B2, C3)
+ * - Selection mapping: User selects grid cells → backend maps to world coordinates
+ *   using grid axis positions (in mm) to filter elements by bounding box
+ *
+ * Model Alignment:
+ * - On load, model bounding box minimum (minX, minZ) is aligned to grid origin (0,0)
+ * - This ensures consistent mapping between grid selection and world coordinates
+ * - The same alignment transform is used by selection → world mapping logic
  */
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { motion } from 'framer-motion'
@@ -51,9 +63,13 @@ export function ErectionSequenceBuilderPage() {
   const { data: gridData, isLoading: gridLoading } = useGridData()
 
   // Grid selection state
+  // gridSelection: "draft" selection while dragging
+  // appliedSelection: last selection that has been explicitly applied to the viewer
   const [gridSelection, setGridSelection] = useState<GridSelection | null>(null)
+  const [appliedSelection, setAppliedSelection] = useState<{ uStart: string; uEnd: string; vStart: string; vEnd: string } | null>(null)
   const [isSelecting, setIsSelecting] = useState(false)
   const [selectionStart, setSelectionStart] = useState<{ v: string; u: string } | null>(null)
+  const [includeFootings, setIncludeFootings] = useState(true)
 
   // Generated stages
   const [generatedStages, setGeneratedStages] = useState<ErectionStage[]>([])
@@ -62,32 +78,37 @@ export function ErectionSequenceBuilderPage() {
   // Viewer state
   const [isViewerReady, setIsViewerReady] = useState(false)
   const [viewerInitialized, setViewerInitialized] = useState(false)
+  const [viewMode, setViewMode] = useState<'plan' | '3d'>('plan')
+  const [gridOverlayOpacity, setGridOverlayOpacity] = useState(0.8)
+  const [modelOpacity, setModelOpacity] = useState(1)
 
   // Playback state
   const [currentStageIndex, setCurrentStageIndex] = useState<number>(-1)
   const [isPlaying, setIsPlaying] = useState(false)
-  const playbackTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const playbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Express IDs cache
   const [stageExpressIds, setStageExpressIds] = useState<Map<string, number[]>>(new Map())
   // ALL elements in the selected grid area (full building section)
   const [sectionIds, setSectionIds] = useState<number[]>([])
 
+  // Hover sync state
+  const [hoveredCell, setHoveredCell] = useState<{ row: number, col: number } | null>(null)
+
   const viewerRef = useRef<IFCViewerHandle>(null)
 
   // Grid axes from API
   const uAxes = useMemo(() => {
-    if (!gridData) return []
-    return gridData.u_axes
+    if (!gridData || !gridData.u_axes || !Array.isArray(gridData.u_axes)) return []
+    // Sort by position DESCENDING so higher positions (top of model) appear at top of grid
+    // This matches the 3D viewer where higher Y/Z positions are at the top
+    return [...gridData.u_axes]
+      .sort((a, b) => b.position - a.position)
       .map(a => a.tag)
-      .sort((a, b) => {
-        // Sort letters alphabetically
-        return a.localeCompare(b)
-      })
   }, [gridData])
 
   const vAxes = useMemo(() => {
-    if (!gridData) return []
+    if (!gridData || !gridData.v_axes || !Array.isArray(gridData.v_axes)) return []
     return gridData.v_axes
       .map(a => a.tag)
       .sort((a, b) => {
@@ -101,6 +122,7 @@ export function ErectionSequenceBuilderPage() {
   // Reset on model change
   useEffect(() => {
     setGridSelection(null)
+    setAppliedSelection(null)
     setGeneratedStages([])
     setCurrentStageIndex(-1)
     setStageExpressIds(new Map())
@@ -136,6 +158,19 @@ export function ErectionSequenceBuilderPage() {
     setIsSelecting(true)
     setSelectionStart({ v, u })
     setGridSelection({ vStart: v, vEnd: v, uStart: u, uEnd: u })
+  }, [])
+
+  const handleCellHover = useCallback((v: string, u: string) => {
+    // Convert to indices for viewer
+    const vIdx = vAxes.indexOf(v)
+    const uIdx = uAxes.indexOf(u)
+    if (vIdx !== -1 && uIdx !== -1) {
+      setHoveredCell({ row: uIdx, col: vIdx })
+    }
+  }, [vAxes, uAxes])
+
+  const handleViewerHover = useCallback((cell: { row: number, col: number } | null) => {
+    setHoveredCell(cell)
   }, [])
 
   const handleCellMouseEnter = useCallback((v: string, u: string) => {
@@ -197,7 +232,7 @@ export function ErectionSequenceBuilderPage() {
         splits: [], // No splits - simple Columns then Beams
       }]
 
-      const result = await api.generateFromSequences(apiSequences, currentModel.file_id)
+      const result = await api.generateFromSequences(apiSequences, currentModel.file_id, includeFootings)
 
       if (result.success && result.stages.length > 0) {
         setGeneratedStages(result.stages)
@@ -239,7 +274,7 @@ export function ErectionSequenceBuilderPage() {
     } finally {
       setIsGenerating(false)
     }
-  }, [gridSelection, currentModel])
+  }, [gridSelection, currentModel, includeFootings])
 
   // Go to a specific stage - CORE VISUALIZATION LOGIC
   // Now shows FULL BUILDING SECTION with stage elements highlighted
@@ -351,6 +386,7 @@ export function ErectionSequenceBuilderPage() {
   // Clear selection
   const handleClearSelection = useCallback(() => {
     setGridSelection(null)
+    setAppliedSelection(null)
     setGeneratedStages([])
     setCurrentStageIndex(-1)
     setStageExpressIds(new Map())
@@ -360,6 +396,45 @@ export function ErectionSequenceBuilderPage() {
       viewerRef.current.clearHighlights()
     }
   }, [])
+
+  // Apply current draft selection to the 3D viewer WITHOUT regenerating stages
+  const handleApplySelectionToViewer = useCallback(async () => {
+    if (!gridSelection || !currentModel) {
+      toast.error('Select a grid area first')
+      return
+    }
+    if (!viewerRef.current) return
+
+    try {
+      // Persist applied selection
+      setAppliedSelection(gridSelection)
+
+      // Fetch all elements in the selected grid area (all types)
+      const res = await api.getGridAreaExpressIds(
+        gridSelection.vStart,
+        gridSelection.vEnd,
+        gridSelection.uStart,
+        gridSelection.uEnd,
+        undefined,
+        currentModel.file_id
+      )
+
+      if (!res.express_ids || res.express_ids.length === 0) {
+        toast.error('No elements found in selected grid area')
+        return
+      }
+
+      // Show ONLY the selected members in the viewer
+      viewerRef.current.clearHighlights()
+      viewerRef.current.showOnlyElements(res.express_ids)
+      setSectionIds(res.express_ids)
+
+      toast.success(`Showing ${res.count} elements in selected grid area`)
+    } catch (err) {
+      console.error('Failed to apply selection to viewer:', err)
+      toast.error('Failed to apply selection to viewer')
+    }
+  }, [gridSelection, currentModel])
 
   if (!currentModel) {
     return (
@@ -426,11 +501,6 @@ export function ErectionSequenceBuilderPage() {
                 <Squares2X2Icon className="w-4 h-4" />
                 Select Grid Area
               </span>
-              {gridSelection && (
-                <Button variant="ghost" size="sm" onClick={handleClearSelection}>
-                  Clear
-                </Button>
-              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="flex-1 overflow-auto">
@@ -449,14 +519,37 @@ export function ErectionSequenceBuilderPage() {
             {/* Grid Selector */}
             {vAxes.length > 0 && uAxes.length > 0 ? (
               <div className="space-y-4">
+                {/* Selected Range Display (draft selection) */}
+                {gridSelection && (
+                  <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Selected Range:</p>
+                        <p className="text-lg font-bold text-blue-700 dark:text-blue-300">
+                          Rows {gridSelection.uStart}–{gridSelection.uEnd}, Cols {gridSelection.vStart}–{gridSelection.vEnd}
+                        </p>
+                        <p className="text-xs text-blue-500 dark:text-blue-400 mt-1">
+                          ({gridSelection.uStart}{gridSelection.vStart} → {gridSelection.uEnd}{gridSelection.vEnd})
+                        </p>
+                      </div>
+                      <button
+                        onClick={handleClearSelection}
+                        className="px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-800/50 hover:bg-blue-200 dark:hover:bg-blue-800 rounded transition-colors"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 {/* Grid Display */}
                 <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-4 bg-slate-50 dark:bg-slate-800/50 overflow-auto">
-                  <div className="inline-block min-w-max">
+                  <div className="inline-block min-w-max relative">
                     {/* V axis labels (numbers) on top */}
                     <div className="flex">
                       <div className="w-8 h-6" /> {/* Corner spacer */}
                       {vAxes.map(v => (
-                        <div key={v} className="w-8 h-6 text-xs text-slate-500 dark:text-slate-400 text-center">
+                        <div key={v} className="w-8 h-6 text-xs text-slate-500 dark:text-slate-400 text-center font-medium">
                           {v}
                         </div>
                       ))}
@@ -465,52 +558,91 @@ export function ErectionSequenceBuilderPage() {
                     {/* Grid cells with U axis labels (letters) on left */}
                     {uAxes.map(u => (
                       <div key={u} className="flex">
-                        <div className="w-8 h-8 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-center">
+                        <div className="w-8 h-8 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-center font-medium">
                           {u}
                         </div>
                         {vAxes.map(v => (
                           <div
                             key={`${v}-${u}`}
                             onMouseDown={() => handleCellMouseDown(v, u)}
-                            onMouseEnter={() => handleCellMouseEnter(v, u)}
+                            onMouseEnter={() => {
+                              handleCellMouseEnter(v, u)
+                              handleCellHover(v, u)
+                            }}
+                            onMouseLeave={() => setHoveredCell(null)}
                             className={cn(
-                              'w-8 h-8 border border-slate-300 dark:border-slate-600 cursor-pointer transition-colors',
+                              'w-8 h-8 border-2 cursor-crosshair transition-all relative',
                               isCellSelected(v, u)
-                                ? 'bg-blue-500/40 border-blue-500'
-                                : 'hover:bg-slate-200 dark:hover:bg-slate-700'
+                                ? 'bg-blue-500/60 border-blue-600 dark:border-blue-400 shadow-sm'
+                                : (hoveredCell && hoveredCell.row === uAxes.indexOf(u) && hoveredCell.col === vAxes.indexOf(v))
+                                  ? 'bg-blue-300/40 border-blue-400' // Hover style
+                                  : 'border-slate-300 dark:border-slate-600 hover:bg-blue-100/50 dark:hover:bg-blue-900/30 hover:border-blue-400 dark:hover:border-blue-600'
                             )}
-                          />
+                            title={`Grid ${v} / ${u}`}
+                          >
+                            {isCellSelected(v, u) && (
+                              <div className="absolute inset-0 bg-blue-500/20 animate-pulse" />
+                            )}
+                          </div>
                         ))}
                       </div>
                     ))}
                   </div>
                 </div>
 
-                {/* Selection Info & Generate Button */}
+                {/* Generate Button & Options */}
                 {gridSelection && (
-                  <div className="p-4 bg-slate-100 dark:bg-slate-800 rounded-lg">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-sm font-medium text-slate-700 dark:text-slate-200">Selected Area:</p>
-                        <p className="text-lg font-bold text-blue-600 dark:text-blue-400">
-                          Grid {gridSelection.vStart}-{gridSelection.vEnd} / {gridSelection.uStart}-{gridSelection.uEnd}
-                        </p>
-                      </div>
+                  <div className="p-4 bg-slate-100 dark:bg-slate-800 rounded-lg space-y-3">
+                    {/* Footing Toggle */}
+                    <div className="flex items-center justify-between p-2 rounded bg-slate-50 dark:bg-slate-900/50">
+                      <label htmlFor="footing-toggle" className="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer flex items-center gap-2">
+                        <input
+                          id="footing-toggle"
+                          type="checkbox"
+                          checked={includeFootings}
+                          onChange={(e) => setIncludeFootings(e.target.checked)}
+                          className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                        />
+                        <span>Include Footings</span>
+                      </label>
+                      <span className="text-xs text-slate-500 dark:text-slate-400">
+                        {includeFootings ? 'Footings → Columns → Beams' : 'Columns → Beams'}
+                      </span>
+                    </div>
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <Button
+                        onClick={handleApplySelectionToViewer}
+                        type="button"
+                        variant="outline"
+                        className="flex-1 px-4"
+                      >
+                        <EyeIcon className="w-4 h-4 mr-2" />
+                        Apply Selection to Viewer
+                      </Button>
                       <Button
                         onClick={handleGenerateStages}
                         disabled={isGenerating}
-                        className="px-6"
+                        className="flex-1 px-4"
                       >
                         {isGenerating ? (
                           <>
                             <ArrowPathIcon className="w-4 h-4 mr-2 animate-spin" />
-                            Generating...
+                            Generating Stages...
                           </>
                         ) : (
-                          'Generate Stages'
+                          <>
+                            <DocumentTextIcon className="w-4 h-4 mr-2" />
+                            Generate Stages
+                          </>
                         )}
                       </Button>
                     </div>
+                    {!isGenerating && (
+                      <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+                        This will create {includeFootings ? 'Footings → ' : ''}Columns → Beams sequence for the selected area
+                      </p>
+                    )}
                   </div>
                 )}
 
@@ -582,8 +714,8 @@ export function ErectionSequenceBuilderPage() {
                               isCurrent
                                 ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
                                 : isComplete
-                                ? 'border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50'
-                                : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/30'
+                                  ? 'border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50'
+                                  : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/30'
                             )}
                           >
                             <div className="flex items-center gap-3">
@@ -593,8 +725,8 @@ export function ErectionSequenceBuilderPage() {
                                   isCurrent
                                     ? 'bg-blue-500 text-white'
                                     : isComplete
-                                    ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
-                                    : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
+                                      ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
+                                      : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
                                 )}
                               >
                                 {isComplete ? (
@@ -654,19 +786,75 @@ export function ErectionSequenceBuilderPage() {
           </CardContent>
         </Card>
 
-        {/* Right Panel - 3D Viewer */}
+        {/* Right Panel - Viewer */}
         <Card className="flex flex-col min-h-0 overflow-hidden">
           <CardHeader className="py-3 flex-shrink-0">
             <CardTitle className="flex items-center justify-between text-base">
-              <span className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
                 <CubeIcon className="w-4 h-4" />
-                3D View
-              </span>
-              {currentStageIndex >= 0 && generatedStages[currentStageIndex] && (
-                <span className="text-sm px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium">
-                  {generatedStages[currentStageIndex].name}
-                </span>
-              )}
+                <div className="inline-flex items-center rounded-full bg-slate-800/60 p-1 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('plan')}
+                    className={cn(
+                      'px-3 py-1 rounded-full transition-colors',
+                      viewMode === 'plan'
+                        ? 'bg-blue-500 text-white'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                    )}
+                  >
+                    Plan View
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('3d')}
+                    className={cn(
+                      'px-3 py-1 rounded-full transition-colors',
+                      viewMode === '3d'
+                        ? 'bg-blue-500 text-white'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-700'
+                    )}
+                  >
+                    3D View
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                {viewMode === 'plan' && (
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <span>Grid overlay</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.1}
+                      value={gridOverlayOpacity}
+                      onChange={(e) => setGridOverlayOpacity(parseFloat(e.target.value))}
+                      className="w-24"
+                    />
+                  </div>
+                )}
+                {/* Transparency Slider */}
+                {viewMode === 'plan' && (
+                  <div className="flex items-center gap-2 text-xs text-slate-400">
+                    <span>Model Opacity</span>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1}
+                      step={0.1}
+                      value={modelOpacity}
+                      onChange={(e) => setModelOpacity(parseFloat(e.target.value))}
+                      className="w-24"
+                    />
+                  </div>
+                )}
+                {currentStageIndex >= 0 && generatedStages[currentStageIndex] && (
+                  <span className="text-sm px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium">
+                    {generatedStages[currentStageIndex].name}
+                  </span>
+                )}
+              </div>
             </CardTitle>
           </CardHeader>
           <CardContent noPadding className="flex-1 relative min-h-0">
@@ -675,6 +863,26 @@ export function ErectionSequenceBuilderPage() {
               fileId={currentModel.file_id}
               fileName={currentModel.file_name}
               onStoreysLoaded={() => setIsViewerReady(true)}
+              gridData={gridData ? { u_axes: gridData.u_axes, v_axes: gridData.v_axes } : undefined}
+              mode={viewMode === 'plan' ? 'plan' : '3d'}
+              gridOverlayOpacity={gridOverlayOpacity}
+              modelOpacity={modelOpacity}
+              // Selection Sync
+              draftSelection={gridSelection ? {
+                uStart: gridSelection.uStart,
+                uEnd: gridSelection.uEnd,
+                vStart: gridSelection.vStart,
+                vEnd: gridSelection.vEnd
+              } : null}
+              appliedSelection={appliedSelection ? {
+                uStart: appliedSelection.uStart,
+                uEnd: appliedSelection.uEnd,
+                vStart: appliedSelection.vStart,
+                vEnd: appliedSelection.vEnd
+              } : null}
+              // Hover Sync
+              hoverCell={hoveredCell}
+              onOverlayHover={handleViewerHover}
             />
             {!isViewerReady && (
               <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 dark:bg-slate-900/80 z-10">
@@ -687,6 +895,6 @@ export function ErectionSequenceBuilderPage() {
           </CardContent>
         </Card>
       </div>
-    </motion.div>
+    </motion.div >
   )
 }

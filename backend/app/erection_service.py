@@ -989,6 +989,20 @@ class ErectionMethodologyService:
     ) -> List[int]:
         """
         Get ExpressIDs for elements within a grid area.
+        
+        Grid Coordinate Mapping:
+        - Grid tags (e.g., "A", "1") map to axis positions (in mm)
+        - V-axes (numbers) map to X coordinates
+        - U-axes (letters) map to Y coordinates
+        - Selection bounds: [v_start, v_end] → [x_min, x_max], [u_start, u_end] → [y_min, y_max]
+        - Elements are filtered by their (x, y) positions falling within these bounds
+        
+        Model Alignment:
+        - Assumes model has been aligned so minX/minY map to grid origin
+        - Uses tolerance (500mm) to account for elements near grid boundaries
+        """
+        """
+        Get ExpressIDs for elements within a grid area.
         Grid area is defined by V-axis range (numbers) and U-axis range (letters).
 
         Uses a robust approach that works even if grid axis positions are incorrect:
@@ -1190,7 +1204,7 @@ class ErectionMethodologyService:
 
         return express_ids
 
-    def generate_from_user_sequences(self, sequences: List[Dict]) -> List[Dict]:
+    def generate_from_user_sequences(self, sequences: List[Dict], include_footings: bool = True) -> List[Dict]:
         """
         Generate erection stages from user-defined sequences.
         This is the Rosehill-style approach:
@@ -1246,12 +1260,17 @@ class ErectionMethodologyService:
             )
             self.zones[zone_id] = zone
 
-            # For each v-range, generate Columns then Beams stages
+            # For each v-range, generate Footings (if enabled), then Columns, then Beams stages
             sub_stage = 1
             for v_start, v_end in v_ranges:
                 grid_range = f"Grid {v_start}-{v_end} / {grid['u_start']}-{grid['u_end']}"
 
                 # Get elements in this grid area
+                footing_ids = []
+                if include_footings:
+                    footing_ids = self.get_express_ids_by_grid_area(
+                        v_start, v_end, grid['u_start'], grid['u_end'], 'footings'
+                    )
                 column_ids = self.get_express_ids_by_grid_area(
                     v_start, v_end, grid['u_start'], grid['u_end'], 'columns'
                 )
@@ -1261,6 +1280,25 @@ class ErectionMethodologyService:
                 bracing_ids = self.get_express_ids_by_grid_area(
                     v_start, v_end, grid['u_start'], grid['u_end'], 'bracing'
                 )
+
+                # Stage X.Y - Footings (if enabled and found)
+                if include_footings and footing_ids:
+                    stage_id = f"{seq_num}.{sub_stage}"
+                    stage = ErectionStage(
+                        stage_id=stage_id,
+                        zone_id=zone_id,
+                        name=f"Stage {stage_id} - {grid_range} Footings",
+                        description=f"Install all footings/foundations in {grid_range}",
+                        element_type='footings',
+                        grid_range=grid_range,
+                        elements=[str(eid) for eid in footing_ids],
+                        sequence_order=stage_order,
+                        instructions=self._generate_rosehill_instructions('footings', grid_range, len(footing_ids), grid)
+                    )
+                    self.stages.append(stage)
+                    generated_stages.append(stage.to_dict(include_express_ids=True))
+                    sub_stage += 1
+                    stage_order += 1
 
                 # Stage X.Y - Columns
                 if column_ids:
