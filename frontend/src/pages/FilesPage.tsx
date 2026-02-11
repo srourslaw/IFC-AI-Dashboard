@@ -6,7 +6,6 @@ import {
   CloudArrowUpIcon,
   DocumentIcon,
   TrashIcon,
-  PlayIcon,
   XMarkIcon,
   CubeIcon,
   ChartBarIcon,
