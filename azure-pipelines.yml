@@ -78,9 +78,12 @@ stages:
             displayName: 'Verify frontend build'
 
           # -- Create deployment package --
-          # Include: backend/, frontend/dist/, uploads/.gitkeep, outputs/.gitkeep
+          # Include: requirements.txt (root for Oryx), backend/, frontend/dist/
           - script: |
               mkdir -p $(Build.ArtifactStagingDirectory)/deploy
+
+              # Copy requirements.txt to root so Oryx detects Python app
+              cp backend/requirements.txt $(Build.ArtifactStagingDirectory)/deploy/
 
               # Copy backend
               cp -r backend $(Build.ArtifactStagingDirectory)/deploy/
@@ -95,9 +98,6 @@ stages:
               mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/takeoffs
               mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/storey_ifcs
               mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/reviews
-
-              # Copy root files
-              cp .gitignore $(Build.ArtifactStagingDirectory)/deploy/ 2>/dev/null || true
 
               echo "Deployment package contents:"
               find $(Build.ArtifactStagingDirectory)/deploy -maxdepth 3 -type f | head -30
@@ -146,7 +146,7 @@ stages:
                     appName: '$(projectName)-dev'
                     resourceGroupName: '$(resourceGroup)'
                     package: '$(Pipeline.Workspace)/drop/deploy.zip'
-                    startUpCommand: 'cd backend && pip install -r requirements.txt && gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --timeout 600'
+                    startUpCommand: 'cd backend && gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --timeout 600'
                   displayName: 'Deploy to DEV Web App'
 
                 - script: |
