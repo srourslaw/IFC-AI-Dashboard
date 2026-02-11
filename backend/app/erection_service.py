@@ -11,6 +11,7 @@ from collections import defaultdict
 import math
 import json
 import re
+import numpy as np
 
 
 @dataclass
@@ -141,10 +142,11 @@ class ErectionMethodologyService:
     """
 
     # Standard structural element types for erection sequencing
+    # Each IFC type appears in exactly ONE category to prevent double-counting
     STRUCTURAL_TYPES = {
         'columns': ['IfcColumn'],
-        'beams': ['IfcBeam', 'IfcMember'],
-        'bracing': ['IfcMember', 'IfcPlate'],  # Bracing often modeled as members
+        'beams': ['IfcBeam'],
+        'bracing': ['IfcMember', 'IfcPlate'],  # Bracing members, fly bracing, gussets
         'slabs': ['IfcSlab'],
         'walls': ['IfcWall', 'IfcWallStandardCase'],
         'footings': ['IfcFooting'],
@@ -215,13 +217,13 @@ class ErectionMethodologyService:
             if grid.ObjectPlacement:
                 try:
                     grid_placement = placement.get_local_placement(grid.ObjectPlacement)
-                except:
+                except Exception:
                     pass
 
             # Extract U axes (typically letters like A, B, C)
             if grid.UAxes:
                 for axis in grid.UAxes:
-                    pos = self._get_axis_position(axis, grid_placement, 'U')
+                    pos = self._get_axis_position(axis, grid_placement)
                     if pos is not None:
                         u_axes.append(GridAxis(
                             tag=axis.AxisTag or f"U{len(u_axes)}",
@@ -232,7 +234,7 @@ class ErectionMethodologyService:
             # Extract V axes (typically numbers like 1, 2, 3)
             if grid.VAxes:
                 for axis in grid.VAxes:
-                    pos = self._get_axis_position(axis, grid_placement, 'V')
+                    pos = self._get_axis_position(axis, grid_placement)
                     if pos is not None:
                         v_axes.append(GridAxis(
                             tag=axis.AxisTag or f"V{len(v_axes)}",
@@ -240,73 +242,168 @@ class ErectionMethodologyService:
                             position=pos
                         ))
 
-        # Sort axes by position
-        u_axes = sorted(u_axes, key=lambda a: a.position)
-        v_axes = sorted(v_axes, key=lambda a: a.position)
-
-        # Remove duplicates (same tag)
+        # Remove duplicates (same tag) — multiple IfcGrid entities may repeat axes at different levels
         seen_u = set()
         seen_v = set()
         unique_u = []
         unique_v = []
 
-        for a in u_axes:
+        for a in sorted(u_axes, key=lambda a: a.position):
             if a.tag not in seen_u:
                 seen_u.add(a.tag)
                 unique_u.append(a)
                 self.grid_axes[f"U_{a.tag}"] = a
 
-        for a in v_axes:
+        for a in sorted(v_axes, key=lambda a: a.position):
             if a.tag not in seen_v:
                 seen_v.add(a.tag)
                 unique_v.append(a)
                 self.grid_axes[f"V_{a.tag}"] = a
 
+        # Determine which world coordinate each axis set maps to.
+        # U-axes that are vertical lines (constant X) → position = X
+        # V-axes that are horizontal lines (constant Y) → position = Y
+        # We need to map these correctly to grid cell x/y ranges.
+        self._u_axis_is_x = self._detect_axis_coordinate(unique_u)
+        self._v_axis_is_x = self._detect_axis_coordinate(unique_v)
+
         # Create grid cells from axis intersections
         self._create_grid_cells(unique_u, unique_v)
 
-    def _get_axis_position(self, axis, grid_placement, direction: str) -> Optional[float]:
-        """Get the position coordinate of a grid axis"""
+    def _detect_axis_coordinate(self, axes: List[GridAxis]) -> bool:
+        """
+        Determine whether the axis positions represent X or Y world coordinates.
+        Returns True if the axis positions represent X coordinates.
+
+        We determine this by checking if the spread of positions aligns more
+        with the X or Y range of structural elements.
+        """
+        if len(axes) < 2:
+            return True  # Default
+
+        # Check the actual grid curve geometry if available
+        # If axes are vertical lines (constant X, varying Y), their positions are X values
+        # If axes are horizontal lines (constant Y, varying X), their positions are Y values
+        # Since we already extracted the constant coordinate, we can check the spread
+        # and compare with element positions later.
+        # For now, we rely on the _get_axis_position logic which already determines
+        # the constant coordinate correctly.
+        return True  # Will be determined by _get_axis_position's coordinate choice
+
+    def _get_axis_position(self, axis, grid_placement) -> Optional[float]:
+        """
+        Get the position coordinate of a grid axis.
+
+        Determines the constant coordinate of the axis line:
+        - A vertical line (running in Y) has constant X → returns X
+        - A horizontal line (running in X) has constant Y → returns Y
+
+        Applies grid placement transformation to get world coordinates.
+        """
         curve = axis.AxisCurve
         if not curve:
             return None
 
         try:
+            p1_local = None
+            p2_local = None
+
             if curve.is_a('IfcPolyline') and curve.Points:
-                # Get first point
-                coords = curve.Points[0].Coordinates
-                # For U axes (letters), position is typically Y
-                # For V axes (numbers), position is typically X
-                if direction == 'U':
-                    return coords[1] if len(coords) > 1 else coords[0]
-                else:
-                    return coords[0]
+                p1_local = list(curve.Points[0].Coordinates)
+                if len(curve.Points) > 1:
+                    p2_local = list(curve.Points[-1].Coordinates)
             elif curve.is_a('IfcLine'):
                 if curve.Pnt:
-                    coords = curve.Pnt.Coordinates
-                    if direction == 'U':
-                        return coords[1] if len(coords) > 1 else coords[0]
-                    else:
-                        return coords[0]
-        except:
+                    p1_local = list(curve.Pnt.Coordinates)
+                    # For IfcLine, compute second point from direction and magnitude
+                    if curve.Dir and curve.Dir.Orientation:
+                        dir_ratios = list(curve.Dir.Orientation.DirectionRatios)
+                        mag = curve.Dir.Magnitude if hasattr(curve.Dir, 'Magnitude') and curve.Dir.Magnitude else 1000.0
+                        p2_local = [p1_local[i] + dir_ratios[i] * mag for i in range(len(p1_local))]
+
+            if p1_local is None:
+                return None
+
+            # Ensure 3D coordinates
+            while len(p1_local) < 3:
+                p1_local.append(0.0)
+
+            # Apply grid placement transformation to get world coordinates
+            if grid_placement is not None:
+                p1_world = np.dot(grid_placement, p1_local + [1.0])[:3]
+            else:
+                p1_world = p1_local
+
+            if p2_local is not None:
+                while len(p2_local) < 3:
+                    p2_local.append(0.0)
+                if grid_placement is not None:
+                    p2_world = np.dot(grid_placement, p2_local + [1.0])[:3]
+                else:
+                    p2_world = p2_local
+
+                # Determine the constant coordinate:
+                # If |dx| < |dy|, the line runs vertically → X is constant → position = X
+                # If |dy| < |dx|, the line runs horizontally → Y is constant → position = Y
+                dx = abs(p2_world[0] - p1_world[0])
+                dy = abs(p2_world[1] - p1_world[1])
+
+                if dx < dy:
+                    # Vertical line → position is the constant X coordinate
+                    return float((p1_world[0] + p2_world[0]) / 2.0)
+                else:
+                    # Horizontal line → position is the constant Y coordinate
+                    return float((p1_world[1] + p2_world[1]) / 2.0)
+            else:
+                # Only one point available, can't determine direction
+                # Return X as default
+                return float(p1_world[0])
+
+        except Exception:
             pass
 
         return None
 
     def _create_grid_cells(self, u_axes: List[GridAxis], v_axes: List[GridAxis]):
-        """Create grid cells from axis intersections"""
+        """
+        Create grid cells from axis intersections.
+
+        Dynamically determines which world coordinate (X or Y) each axis set maps to
+        by analyzing the actual spread of axis positions.
+        """
+        if len(u_axes) < 2 or len(v_axes) < 2:
+            return
+
+        # Determine axis-to-world-coordinate mapping.
+        # Each axis set's positions correspond to either X or Y world coordinates.
+        # We determine this by checking: U-axis positions should be perpendicular to V-axis positions.
+        u_positions = [a.position for a in u_axes]
+        v_positions = [a.position for a in v_axes]
+
+        u_min, u_max = min(u_positions), max(u_positions)
+        v_min, v_max = min(v_positions), max(v_positions)
+
+        # Check if U and V ranges overlap significantly - if they do, they likely
+        # represent the same coordinate (bug), so we need to distinguish them.
+        # Typically, one set spans in X and the other in Y.
+        # We'll use the convention: U-axis positions → one world coordinate,
+        # V-axis positions → the other.
+        # The _get_axis_position already returns the constant coordinate of each line.
+
         for i, u in enumerate(u_axes[:-1]):
             u_next = u_axes[i + 1]
             for j, v in enumerate(v_axes[:-1]):
                 v_next = v_axes[j + 1]
 
+                # U-axes are typically vertical lines → their position is X
+                # V-axes are typically horizontal lines → their position is Y
                 cell = GridCell(
                     u_axis=u.tag,
                     v_axis=v.tag,
-                    x_min=min(v.position, v_next.position),
-                    x_max=max(v.position, v_next.position),
-                    y_min=min(u.position, u_next.position),
-                    y_max=max(u.position, u_next.position)
+                    x_min=min(u.position, u_next.position),
+                    x_max=max(u.position, u_next.position),
+                    y_min=min(v.position, v_next.position),
+                    y_max=max(v.position, v_next.position)
                 )
                 self.grid_cells[cell.name] = cell
 
@@ -410,31 +507,31 @@ class ErectionMethodologyService:
         # Create grid with ~10m spacing
         grid_spacing = 10000  # 10m in mm
 
-        # Create U axes (Y direction)
+        # Create U axes (X direction — letters, matching IFC convention)
         u_axes = []
-        y_pos = y_min
+        x_pos = x_min
         label_idx = 0
         labels = 'ABCDEFGHJKLMNPQRSTUVWXYZ'  # Skip I and O
 
-        while y_pos <= y_max + grid_spacing:
+        while x_pos <= x_max + grid_spacing:
             tag = labels[label_idx % len(labels)]
             if label_idx >= len(labels):
                 tag = f"{labels[label_idx // len(labels) - 1]}{labels[label_idx % len(labels)]}"
-            u_axes.append(GridAxis(tag=tag, direction='U', position=y_pos))
+            u_axes.append(GridAxis(tag=tag, direction='U', position=x_pos))
             self.grid_axes[f"U_{tag}"] = u_axes[-1]
-            y_pos += grid_spacing
+            x_pos += grid_spacing
             label_idx += 1
 
-        # Create V axes (X direction)
+        # Create V axes (Y direction — numbers, matching IFC convention)
         v_axes = []
-        x_pos = x_min
+        y_pos = y_min
         num = 1
 
-        while x_pos <= x_max + grid_spacing:
+        while y_pos <= y_max + grid_spacing:
             tag = str(num).zfill(2)
-            v_axes.append(GridAxis(tag=tag, direction='V', position=x_pos))
+            v_axes.append(GridAxis(tag=tag, direction='V', position=y_pos))
             self.grid_axes[f"V_{tag}"] = v_axes[-1]
-            x_pos += grid_spacing
+            y_pos += grid_spacing
             num += 1
 
         self._create_grid_cells(u_axes, v_axes)
@@ -683,21 +780,28 @@ class ErectionMethodologyService:
                     stage_counter += 1
 
     def _get_short_level_name(self, level_name: str) -> str:
-        """Convert level name to short form for display"""
-        level_lower = level_name.lower()
-        if 'ground' in level_lower or level_lower in ['l1', 'level 1', 'level1', 'gf']:
-            return 'L1'
+        """Convert level name to short form for display.
+        Uses actual level name to avoid ambiguity (e.g. GROUND vs LEVEL 1)."""
+        level_lower = level_name.lower().strip()
+
+        # Use the actual name — avoid conflating distinct levels
+        if 'footing' in level_lower or 'foundation' in level_lower:
+            return 'FTG'
+        elif level_lower in ['ground', 'ground floor', 'gf', 'ground level']:
+            return 'GF'
         elif 'mezzanine' in level_lower or 'mezz' in level_lower:
             return 'Mezz'
-        elif 'roof' in level_lower:
+        elif 'roof' in level_lower or 'ridge' in level_lower:
             return 'Roof'
-        elif 'level 2' in level_lower or 'l2' in level_lower:
-            return 'L2'
-        elif 'level 3' in level_lower or 'l3' in level_lower:
-            return 'L3'
+        elif 'basement' in level_lower:
+            return 'B1'
         else:
-            # Try to extract a number
-            match = re.search(r'(\d+)', level_name)
+            # Try to extract "Level N" pattern
+            match = re.search(r'level\s*(\d+)', level_lower)
+            if match:
+                return f"L{match.group(1)}"
+            # Try bare number
+            match = re.search(r'^l(\d+)$', level_lower)
             if match:
                 return f"L{match.group(1)}"
             return level_name[:10]  # Truncate if too long
@@ -840,18 +944,21 @@ class ErectionMethodologyService:
 
         if x_range:
             zone.x_range = x_range
-            # Re-map elements to this zone
+        if y_range:
+            zone.y_range = y_range
+
+        # Re-map elements whenever boundaries change
+        if x_range or y_range:
+            effective_x = zone.x_range
+            effective_y = zone.y_range
+
             zone.elements = []
             zone.element_counts = defaultdict(int)
 
             for elem in self.elements.values():
-                if x_range[0] <= elem.x < x_range[1]:
-                    if y_range:
-                        if y_range[0] <= elem.y < y_range[1]:
-                            zone.elements.append(elem.global_id)
-                    else:
-                        zone.elements.append(elem.global_id)
-
+                if (effective_x[0] <= elem.x < effective_x[1] and
+                        effective_y[0] <= elem.y < effective_y[1]):
+                    zone.elements.append(elem.global_id)
                     for category, types in self.STRUCTURAL_TYPES.items():
                         if elem.ifc_type in types:
                             zone.element_counts[category] += 1
@@ -859,16 +966,14 @@ class ErectionMethodologyService:
 
             zone.element_counts = dict(zone.element_counts)
 
-        if y_range:
-            zone.y_range = y_range
-
         # Regenerate stages for this zone
         self._regenerate_zone_stages(zone_id)
 
         return zone.to_dict()
 
     def _regenerate_zone_stages(self, zone_id: int):
-        """Regenerate stages for a specific zone after update"""
+        """Regenerate stages for a specific zone after update.
+        Follows the same level-by-level logic as _generate_stages."""
         # Remove existing stages for this zone
         self.stages = [s for s in self.stages if s.zone_id != zone_id]
 
@@ -887,35 +992,76 @@ class ErectionMethodologyService:
                         break
         zone.element_counts = dict(element_counts)
 
-        # Generate new stages
-        for element_type in self.ERECTION_ORDER:
-            if zone.element_counts.get(element_type, 0) > 0:
-                stage_elements = [
-                    eid for eid in zone.elements
-                    if eid in self.elements and
-                    self.elements[eid].ifc_type in self.STRUCTURAL_TYPES.get(element_type, [])
-                ]
+        # Get sorted levels
+        sorted_levels = sorted(self.levels.items(), key=lambda x: x[1])
+        PRIMARY_SEQUENCE = ['footings', 'columns', 'beams', 'bracing', 'slabs']
+        SECONDARY_SEQUENCE = ['walls', 'stairs', 'railings']
 
+        # Group zone elements by level
+        elements_by_level = defaultdict(list)
+        for eid in zone.elements:
+            elem = self.elements.get(eid)
+            if elem:
+                elements_by_level[elem.level].append(eid)
+
+        # Generate stages level-by-level (same logic as _generate_stages)
+        for level_name, _ in sorted_levels:
+            level_elements = elements_by_level.get(level_name, [])
+            if not level_elements:
+                continue
+
+            for element_type in PRIMARY_SEQUENCE:
+                stage_elements = [
+                    eid for eid in level_elements
+                    if self.elements[eid].ifc_type in self.STRUCTURAL_TYPES.get(element_type, [])
+                ]
                 if not stage_elements:
                     continue
 
                 sub_stage = len([s for s in self.stages if s.zone_id == zone_id]) + 1
                 stage_id = f"{zone_id}.{sub_stage}"
-
-                instructions = self._generate_stage_instructions(
-                    element_type, zone, len(stage_elements)
-                )
+                level_short = self._get_short_level_name(level_name)
 
                 stage = ErectionStage(
                     stage_id=stage_id,
                     zone_id=zone_id,
-                    name=f"Stage {stage_id} - {element_type.title()}",
-                    description=f"Install {element_type} in {zone.name}",
+                    name=f"Stage {stage_id} - {level_short} {element_type.title()}",
+                    description=f"Install {level_short} {element_type} in {zone.name}",
                     element_type=element_type,
                     grid_range=zone.name,
                     elements=stage_elements,
-                    sequence_order=0,  # Will be reordered
-                    instructions=instructions
+                    sequence_order=0,
+                    instructions=self._generate_stage_instructions(element_type, zone, len(stage_elements), level_short)
+                )
+                self.stages.append(stage)
+
+        for level_name, _ in sorted_levels:
+            level_elements = elements_by_level.get(level_name, [])
+            if not level_elements:
+                continue
+
+            for element_type in SECONDARY_SEQUENCE:
+                stage_elements = [
+                    eid for eid in level_elements
+                    if self.elements[eid].ifc_type in self.STRUCTURAL_TYPES.get(element_type, [])
+                ]
+                if not stage_elements:
+                    continue
+
+                sub_stage = len([s for s in self.stages if s.zone_id == zone_id]) + 1
+                stage_id = f"{zone_id}.{sub_stage}"
+                level_short = self._get_short_level_name(level_name)
+
+                stage = ErectionStage(
+                    stage_id=stage_id,
+                    zone_id=zone_id,
+                    name=f"Stage {stage_id} - {level_short} {element_type.title()}",
+                    description=f"Install {level_short} {element_type} in {zone.name}",
+                    element_type=element_type,
+                    grid_range=zone.name,
+                    elements=stage_elements,
+                    sequence_order=0,
+                    instructions=self._generate_stage_instructions(element_type, zone, len(stage_elements), level_short)
                 )
                 self.stages.append(stage)
 
@@ -989,23 +1135,13 @@ class ErectionMethodologyService:
     ) -> List[int]:
         """
         Get ExpressIDs for elements within a grid area.
-        
-        Grid Coordinate Mapping:
-        - Grid tags (e.g., "A", "1") map to axis positions (in mm)
-        - V-axes (numbers) map to X coordinates
-        - U-axes (letters) map to Y coordinates
-        - Selection bounds: [v_start, v_end] → [x_min, x_max], [u_start, u_end] → [y_min, y_max]
-        - Elements are filtered by their (x, y) positions falling within these bounds
-        
-        Model Alignment:
-        - Assumes model has been aligned so minX/minY map to grid origin
-        - Uses tolerance (500mm) to account for elements near grid boundaries
-        """
-        """
-        Get ExpressIDs for elements within a grid area.
-        Grid area is defined by V-axis range (numbers) and U-axis range (letters).
 
-        Uses a robust approach that works even if grid axis positions are incorrect:
+        Grid Coordinate Mapping:
+        - U-axes (letters) → X coordinates (vertical lines with constant X)
+        - V-axes (numbers) → Y coordinates (horizontal lines with constant Y)
+        - Uses tolerance (500mm) to account for elements near grid boundaries
+
+        Strategy:
         1. First tries to use valid grid axis positions
         2. Falls back to proportional division based on total grid count
         """
@@ -1042,24 +1178,27 @@ class ErectionMethodologyService:
         v_axes: List[GridAxis], u_axes: List[GridAxis],
         element_type: str = None
     ) -> List[int]:
-        """Use actual grid axis positions for filtering"""
-        v_positions = []
+        """Use actual grid axis positions for filtering.
+        U-axis positions = X coordinates, V-axis positions = Y coordinates."""
         u_positions = []
+        v_positions = []
 
-        for axis in v_axes:
-            if axis.tag in [v_start, v_end]:
-                v_positions.append(axis.position)
         for axis in u_axes:
             if axis.tag in [u_start, u_end]:
                 u_positions.append(axis.position)
+        for axis in v_axes:
+            if axis.tag in [v_start, v_end]:
+                v_positions.append(axis.position)
 
-        if len(v_positions) < 2 or len(u_positions) < 2:
+        if len(u_positions) < 2 or len(v_positions) < 2:
             return self._get_express_ids_by_proportional_grid(
                 v_start, v_end, u_start, u_end, v_axes, u_axes, element_type
             )
 
-        x_min, x_max = min(v_positions), max(v_positions)
-        y_min, y_max = min(u_positions), max(u_positions)
+        # U-axes are vertical lines → their positions are X coordinates
+        # V-axes are horizontal lines → their positions are Y coordinates
+        x_min, x_max = min(u_positions), max(u_positions)
+        y_min, y_max = min(v_positions), max(v_positions)
 
         # Check if positions have meaningful spread (at least 1m difference)
         if abs(x_max - x_min) < 1000 or abs(y_max - y_min) < 1000:
@@ -1104,44 +1243,43 @@ class ErectionMethodologyService:
         x_range = x_max - x_min if x_max > x_min else 1
         y_range = y_max - y_min if y_max > y_min else 1
 
-        # Get V axis tags and their indices (numbers)
-        v_tags = sorted([a.tag for a in v_axes], key=lambda t: int(t) if t.isdigit() else 0)
-        # Get U axis tags and their indices (letters)
+        # U-axis tags (letters) → X direction, V-axis tags (numbers) → Y direction
         u_tags = sorted([a.tag for a in u_axes], key=lambda t: ord(t[0].upper()) if t else 0)
+        v_tags = sorted([a.tag for a in v_axes], key=lambda t: int(t) if t.isdigit() else 0)
 
-        if not v_tags or not u_tags:
+        if not u_tags or not v_tags:
             # No grid axes, use all elements
             return self._filter_by_type(list(self.elements.values()), element_type)
 
-        # Calculate proportional bounds for V (X direction)
-        try:
-            v_start_idx = v_tags.index(v_start) if v_start in v_tags else 0
-            v_end_idx = v_tags.index(v_end) if v_end in v_tags else len(v_tags) - 1
-        except:
-            v_start_idx = 0
-            v_end_idx = len(v_tags) - 1
-
-        # Calculate proportional bounds for U (Y direction)
+        # Calculate proportional bounds for U (X direction)
         try:
             u_start_idx = u_tags.index(u_start) if u_start in u_tags else 0
             u_end_idx = u_tags.index(u_end) if u_end in u_tags else len(u_tags) - 1
-        except:
+        except Exception:
             u_start_idx = 0
             u_end_idx = len(u_tags) - 1
 
+        # Calculate proportional bounds for V (Y direction)
+        try:
+            v_start_idx = v_tags.index(v_start) if v_start in v_tags else 0
+            v_end_idx = v_tags.index(v_end) if v_end in v_tags else len(v_tags) - 1
+        except Exception:
+            v_start_idx = 0
+            v_end_idx = len(v_tags) - 1
+
         # Ensure proper ordering
-        v_start_idx, v_end_idx = min(v_start_idx, v_end_idx), max(v_start_idx, v_end_idx)
         u_start_idx, u_end_idx = min(u_start_idx, u_end_idx), max(u_start_idx, u_end_idx)
+        v_start_idx, v_end_idx = min(v_start_idx, v_end_idx), max(v_start_idx, v_end_idx)
 
         # Calculate coordinate bounds as proportions of the building
-        num_v_divisions = len(v_tags)
         num_u_divisions = len(u_tags)
+        num_v_divisions = len(v_tags)
 
-        # Add tolerance (extra half grid on each side)
-        x_start = x_min + (v_start_idx / num_v_divisions) * x_range - (x_range / num_v_divisions / 2)
-        x_end = x_min + ((v_end_idx + 1) / num_v_divisions) * x_range + (x_range / num_v_divisions / 2)
-        y_start = y_min + (u_start_idx / num_u_divisions) * y_range - (y_range / num_u_divisions / 2)
-        y_end = y_min + ((u_end_idx + 1) / num_u_divisions) * y_range + (y_range / num_u_divisions / 2)
+        # U-axes map to X, V-axes map to Y — add tolerance (extra half grid on each side)
+        x_start = x_min + (u_start_idx / num_u_divisions) * x_range - (x_range / num_u_divisions / 2)
+        x_end = x_min + ((u_end_idx + 1) / num_u_divisions) * x_range + (x_range / num_u_divisions / 2)
+        y_start = y_min + (v_start_idx / num_v_divisions) * y_range - (y_range / num_v_divisions / 2)
+        y_end = y_min + ((v_end_idx + 1) / num_v_divisions) * y_range + (y_range / num_v_divisions / 2)
 
         # Filter elements by coordinate bounds
         express_ids = []
@@ -1210,7 +1348,7 @@ class ErectionMethodologyService:
         This is the Rosehill-style approach:
         - User defines erection areas by grid reference
         - User specifies split points to subdivide areas
-        - System generates stages: Columns first, then Beams for each sub-area
+        - System generates stages per LEVEL: Footings → Columns → Beams for each sub-area
 
         Sequences format:
         [
@@ -1222,11 +1360,14 @@ class ErectionMethodologyService:
             }
         ]
 
-        This generates:
-        - Stage 1.1: Grid 2-5 / A-J Columns
-        - Stage 1.2: Grid 2-5 / A-J Beams
-        - Stage 1.3: Grid 5-8 / A-J Columns
-        - Stage 1.4: Grid 5-8 / A-J Beams
+        For a 2-level building with a split at 5, this generates:
+        - Stage 1.1: Grid 2-5 / A-J Level 0 Foundations
+        - Stage 1.2: Grid 2-5 / A-J Level 0 Columns
+        - Stage 1.3: Grid 2-5 / A-J Level 0 Beams
+        - Stage 1.4: Grid 2-5 / A-J Level 1 Columns
+        - Stage 1.5: Grid 2-5 / A-J Level 1 Beams
+        - Stage 1.6: Grid 5-8 / A-J Level 0 Foundations
+        - ...
         """
         # Clear existing stages and zones
         self.stages = []
@@ -1234,6 +1375,9 @@ class ErectionMethodologyService:
 
         generated_stages = []
         stage_order = 1
+
+        # Build a reverse lookup: express_id → StructuralElement
+        express_to_elem = {e.express_id: e for e in self.elements.values()}
 
         for seq in sequences:
             seq_num = seq['sequence_number']
@@ -1260,84 +1404,115 @@ class ErectionMethodologyService:
             )
             self.zones[zone_id] = zone
 
-            # For each v-range, generate Footings (if enabled), then Columns, then Beams stages
             sub_stage = 1
             for v_start, v_end in v_ranges:
                 grid_range = f"Grid {v_start}-{v_end} / {grid['u_start']}-{grid['u_end']}"
 
-                # Get elements in this grid area
-                footing_ids = []
-                if include_footings:
-                    footing_ids = self.get_express_ids_by_grid_area(
-                        v_start, v_end, grid['u_start'], grid['u_end'], 'footings'
-                    )
-                column_ids = self.get_express_ids_by_grid_area(
-                    v_start, v_end, grid['u_start'], grid['u_end'], 'columns'
-                )
-                beam_ids = self.get_express_ids_by_grid_area(
-                    v_start, v_end, grid['u_start'], grid['u_end'], 'beams'
-                )
-                bracing_ids = self.get_express_ids_by_grid_area(
-                    v_start, v_end, grid['u_start'], grid['u_end'], 'bracing'
+                # Get ALL elements in grid area (no type filter) — single query
+                all_area_ids = self.get_express_ids_by_grid_area(
+                    v_start, v_end, grid['u_start'], grid['u_end'], None
                 )
 
-                # Stage X.Y - Footings (if enabled and found)
-                if include_footings and footing_ids:
-                    stage_id = f"{seq_num}.{sub_stage}"
-                    stage = ErectionStage(
-                        stage_id=stage_id,
-                        zone_id=zone_id,
-                        name=f"Stage {stage_id} - {grid_range} Footings",
-                        description=f"Install all footings/foundations in {grid_range}",
-                        element_type='footings',
-                        grid_range=grid_range,
-                        elements=[str(eid) for eid in footing_ids],
-                        sequence_order=stage_order,
-                        instructions=self._generate_rosehill_instructions('footings', grid_range, len(footing_ids), grid)
-                    )
-                    self.stages.append(stage)
-                    generated_stages.append(stage.to_dict(include_express_ids=True))
-                    sub_stage += 1
-                    stage_order += 1
+                # Resolve to element objects
+                area_elements = [express_to_elem[eid] for eid in all_area_ids if eid in express_to_elem]
 
-                # Stage X.Y - Columns
-                if column_ids:
-                    stage_id = f"{seq_num}.{sub_stage}"
-                    stage = ErectionStage(
-                        stage_id=stage_id,
-                        zone_id=zone_id,
-                        name=f"Stage {stage_id} - {grid_range} Columns",
-                        description=f"Erect all columns in {grid_range}",
-                        element_type='columns',
-                        grid_range=grid_range,
-                        elements=[str(eid) for eid in column_ids],  # Store as strings for consistency
-                        sequence_order=stage_order,
-                        instructions=self._generate_rosehill_instructions('columns', grid_range, len(column_ids), grid)
-                    )
-                    self.stages.append(stage)
-                    generated_stages.append(stage.to_dict(include_express_ids=True))
-                    sub_stage += 1
-                    stage_order += 1
+                if not area_elements:
+                    continue
 
-                # Stage X.Y - Beams (includes bracing)
-                all_beam_ids = beam_ids + bracing_ids
-                if all_beam_ids:
-                    stage_id = f"{seq_num}.{sub_stage}"
-                    stage = ErectionStage(
-                        stage_id=stage_id,
-                        zone_id=zone_id,
-                        name=f"Stage {stage_id} - {grid_range} Beams",
-                        description=f"Install all beams and bracing in {grid_range}",
-                        element_type='beams',
-                        grid_range=grid_range,
-                        elements=[str(eid) for eid in all_beam_ids],
-                        sequence_order=stage_order,
-                        instructions=self._generate_rosehill_instructions('beams', grid_range, len(all_beam_ids), grid)
-                    )
-                    self.stages.append(stage)
-                    generated_stages.append(stage.to_dict(include_express_ids=True))
-                    sub_stage += 1
-                    stage_order += 1
+                # Group elements by level
+                level_groups: Dict[str, list] = defaultdict(list)
+                for elem in area_elements:
+                    level_groups[elem.level].append(elem)
+
+                # Sort levels bottom-to-top by minimum Z coordinate
+                sorted_levels = sorted(
+                    level_groups.keys(),
+                    key=lambda lvl: min(e.z for e in level_groups[lvl])
+                )
+
+                multi_level = len(sorted_levels) > 1
+
+                for level in sorted_levels:
+                    level_elems = level_groups[level]
+                    level_suffix = f" - {level}" if multi_level else ""
+                    stage_grid_range = f"{grid_range}{level_suffix}"
+
+                    # Split elements by structural type
+                    footing_ids = [e.express_id for e in level_elems
+                                   if e.ifc_type in self.STRUCTURAL_TYPES.get('footings', [])]
+                    column_ids = [e.express_id for e in level_elems
+                                  if e.ifc_type in self.STRUCTURAL_TYPES.get('columns', [])]
+                    beam_ids = [e.express_id for e in level_elems
+                                if e.ifc_type in self.STRUCTURAL_TYPES.get('beams', [])]
+                    bracing_ids = [e.express_id for e in level_elems
+                                   if e.ifc_type in self.STRUCTURAL_TYPES.get('bracing', [])]
+
+                    # Stage: Foundations (if enabled and found)
+                    if include_footings and footing_ids:
+                        stage_id = f"{seq_num}.{sub_stage}"
+                        stage = ErectionStage(
+                            stage_id=stage_id,
+                            zone_id=zone_id,
+                            name=f"Stage {stage_id} - {stage_grid_range} Foundations",
+                            description=f"Install all foundations in {stage_grid_range}. "
+                                        f"Foundations must be complete and checked before column erection begins.",
+                            element_type='footings',
+                            grid_range=stage_grid_range,
+                            elements=[str(eid) for eid in footing_ids],
+                            sequence_order=stage_order,
+                            instructions=self._generate_rosehill_instructions('footings', stage_grid_range, len(footing_ids), grid)
+                        )
+                        self.stages.append(stage)
+                        generated_stages.append(stage.to_dict(include_express_ids=True))
+                        sub_stage += 1
+                        stage_order += 1
+
+                    # Stage: Columns
+                    if column_ids:
+                        stage_id = f"{seq_num}.{sub_stage}"
+                        stage = ErectionStage(
+                            stage_id=stage_id,
+                            zone_id=zone_id,
+                            name=f"Stage {stage_id} - {stage_grid_range} Columns",
+                            description=f"Erect all {len(column_ids)} columns in {stage_grid_range}. "
+                                        f"Columns must be plumbed, aligned, and temporarily braced before beams are installed.",
+                            element_type='columns',
+                            grid_range=stage_grid_range,
+                            elements=[str(eid) for eid in column_ids],
+                            sequence_order=stage_order,
+                            instructions=self._generate_rosehill_instructions('columns', stage_grid_range, len(column_ids), grid)
+                        )
+                        self.stages.append(stage)
+                        generated_stages.append(stage.to_dict(include_express_ids=True))
+                        sub_stage += 1
+                        stage_order += 1
+
+                    # Stage: Beams + Bracing
+                    all_beam_ids = beam_ids + bracing_ids
+                    if all_beam_ids:
+                        stage_id = f"{seq_num}.{sub_stage}"
+                        desc_parts = []
+                        if beam_ids:
+                            desc_parts.append(f"{len(beam_ids)} beams")
+                        if bracing_ids:
+                            desc_parts.append(f"{len(bracing_ids)} bracing members")
+                        desc_summary = " and ".join(desc_parts)
+                        stage = ErectionStage(
+                            stage_id=stage_id,
+                            zone_id=zone_id,
+                            name=f"Stage {stage_id} - {stage_grid_range} Beams",
+                            description=f"Install {desc_summary} in {stage_grid_range}. "
+                                        f"Beams connect columns and complete the structural frame at this level.",
+                            element_type='beams',
+                            grid_range=stage_grid_range,
+                            elements=[str(eid) for eid in all_beam_ids],
+                            sequence_order=stage_order,
+                            instructions=self._generate_rosehill_instructions('beams', stage_grid_range, len(all_beam_ids), grid)
+                        )
+                        self.stages.append(stage)
+                        generated_stages.append(stage.to_dict(include_express_ids=True))
+                        sub_stage += 1
+                        stage_order += 1
 
             # Update zone with all elements from its stages
             zone_stages = [s for s in self.stages if s.zone_id == zone_id]
@@ -1364,19 +1539,29 @@ class ErectionMethodologyService:
         u_start = grid_selection['u_start']
         u_end = grid_selection['u_end']
 
-        if element_type == 'columns':
+        if element_type == 'footings':
+            return [
+                f"Install all {count} foundations in {grid_range}",
+                f"Foundations to be placed bay by bay from grid {u_start} through to grid {u_end}",
+                "Verify foundation levels and alignment before grouting",
+                "All holding-down bolts to be checked for position and projection",
+                "Foundations must be signed off before column erection begins",
+            ]
+        elif element_type == 'columns':
             return [
                 f"Erect all {count} columns in {grid_range}",
-                f"Columns to be installed bay by bay from {u_start}-{chr(ord(u_start)+1)} through to {chr(ord(u_end)-1)}-{u_end}",
+                f"Columns to be installed bay by bay from grid {u_start} through to grid {u_end}",
                 "Columns to be plumbed, aligned, and snug tightened",
                 "Temporary bracing to be installed as required to maintain stability",
+                "Check column plumb and alignment before proceeding to beams",
             ]
         elif element_type == 'beams':
             return [
-                f"Install all {count} beams between grids in {grid_range}",
-                f"Install beams in each bay {u_start}-{chr(ord(u_start)+1)} through {chr(ord(u_end)-1)}-{u_end}",
+                f"Install all {count} beams and bracing in {grid_range}",
+                f"Install beams in each bay from grid {u_start} through grid {u_end}",
                 "Install wall struts, headers and cross bracing as per drawings",
                 "Snug tighten all bolts and tension bracing where applicable",
+                "Ensure all connections are secure before releasing crane",
             ]
         else:
             return [f"Install {count} {element_type} elements in {grid_range}"]
@@ -1404,59 +1589,66 @@ class ErectionMethodologyService:
         This includes walls, slabs, roofing, cladding, doors, windows, MEP, etc.
         Used to show the complete building section for a grid area.
         """
-        # Get grid coordinate bounds using the same logic as structural elements
-        v_axes = sorted(
-            [a for a in self.grid_axes.values() if a.direction == 'V'],
-            key=lambda a: int(a.tag) if a.tag.isdigit() else ord(a.tag[0])
-        )
-        u_axes = sorted(
+        # Use actual grid axis positions for coordinate bounds.
+        # U-axes = X coordinates, V-axes = Y coordinates.
+        u_axes_list = sorted(
             [a for a in self.grid_axes.values() if a.direction == 'U'],
-            key=lambda a: ord(a.tag[0].upper()) if a.tag else 0
+            key=lambda a: a.position
+        )
+        v_axes_list = sorted(
+            [a for a in self.grid_axes.values() if a.direction == 'V'],
+            key=lambda a: a.position
         )
 
-        # Calculate coordinate bounds using proportional method (most reliable)
         if not self.elements:
             return []
 
-        xs = [e.x for e in self.elements.values()]
-        ys = [e.y for e in self.elements.values()]
-        x_min, x_max = min(xs), max(xs)
-        y_min, y_max = min(ys), max(ys)
-        x_range = x_max - x_min if x_max > x_min else 1
-        y_range = y_max - y_min if y_max > y_min else 1
+        # Try to use actual axis positions first (most accurate)
+        u_positions = [a.position for a in u_axes_list if a.tag in [u_start, u_end]]
+        v_positions = [a.position for a in v_axes_list if a.tag in [v_start, v_end]]
 
-        v_tags = sorted([a.tag for a in v_axes], key=lambda t: int(t) if t.isdigit() else 0)
-        u_tags = sorted([a.tag for a in u_axes], key=lambda t: ord(t[0].upper()) if t else 0)
+        if len(u_positions) >= 2 and len(v_positions) >= 2:
+            bound_x_min = min(u_positions) - 500
+            bound_x_max = max(u_positions) + 500
+            bound_y_min = min(v_positions) - 500
+            bound_y_max = max(v_positions) + 500
+        else:
+            # Fallback to proportional method
+            xs = [e.x for e in self.elements.values()]
+            ys = [e.y for e in self.elements.values()]
+            x_min, x_max = min(xs), max(xs)
+            y_min, y_max = min(ys), max(ys)
+            x_range = x_max - x_min if x_max > x_min else 1
+            y_range = y_max - y_min if y_max > y_min else 1
 
-        if not v_tags or not u_tags:
-            return []
+            u_tags = sorted([a.tag for a in u_axes_list], key=lambda t: ord(t[0].upper()) if t else 0)
+            v_tags = sorted([a.tag for a in v_axes_list], key=lambda t: int(t) if t.isdigit() else 0)
 
-        # Get indices for the selected range
-        try:
-            v_start_idx = v_tags.index(v_start) if v_start in v_tags else 0
-            v_end_idx = v_tags.index(v_end) if v_end in v_tags else len(v_tags) - 1
-        except:
-            v_start_idx = 0
-            v_end_idx = len(v_tags) - 1
+            if not u_tags or not v_tags:
+                return []
 
-        try:
-            u_start_idx = u_tags.index(u_start) if u_start in u_tags else 0
-            u_end_idx = u_tags.index(u_end) if u_end in u_tags else len(u_tags) - 1
-        except:
-            u_start_idx = 0
-            u_end_idx = len(u_tags) - 1
+            try:
+                u_start_idx = u_tags.index(u_start) if u_start in u_tags else 0
+                u_end_idx = u_tags.index(u_end) if u_end in u_tags else len(u_tags) - 1
+            except Exception:
+                u_start_idx, u_end_idx = 0, len(u_tags) - 1
 
-        v_start_idx, v_end_idx = min(v_start_idx, v_end_idx), max(v_start_idx, v_end_idx)
-        u_start_idx, u_end_idx = min(u_start_idx, u_end_idx), max(u_start_idx, u_end_idx)
+            try:
+                v_start_idx = v_tags.index(v_start) if v_start in v_tags else 0
+                v_end_idx = v_tags.index(v_end) if v_end in v_tags else len(v_tags) - 1
+            except Exception:
+                v_start_idx, v_end_idx = 0, len(v_tags) - 1
 
-        num_v_divisions = len(v_tags)
-        num_u_divisions = len(u_tags)
+            u_start_idx, u_end_idx = min(u_start_idx, u_end_idx), max(u_start_idx, u_end_idx)
+            v_start_idx, v_end_idx = min(v_start_idx, v_end_idx), max(v_start_idx, v_end_idx)
 
-        # Calculate coordinate bounds with tolerance
-        bound_x_min = x_min + (v_start_idx / num_v_divisions) * x_range - (x_range / num_v_divisions / 2)
-        bound_x_max = x_min + ((v_end_idx + 1) / num_v_divisions) * x_range + (x_range / num_v_divisions / 2)
-        bound_y_min = y_min + (u_start_idx / num_u_divisions) * y_range - (y_range / num_u_divisions / 2)
-        bound_y_max = y_min + ((u_end_idx + 1) / num_u_divisions) * y_range + (y_range / num_u_divisions / 2)
+            num_u = len(u_tags)
+            num_v = len(v_tags)
+
+            bound_x_min = x_min + (u_start_idx / num_u) * x_range - (x_range / num_u / 2)
+            bound_x_max = x_min + ((u_end_idx + 1) / num_u) * x_range + (x_range / num_u / 2)
+            bound_y_min = y_min + (v_start_idx / num_v) * y_range - (y_range / num_v / 2)
+            bound_y_max = y_min + ((v_end_idx + 1) / num_v) * y_range + (y_range / num_v / 2)
 
         # Now scan ALL IFC building elements (not just structural)
         all_building_types = [

@@ -19,7 +19,7 @@
  * - This ensures consistent mapping between grid selection and world coordinates
  * - The same alignment transform is used by selection → world mapping logic
  */
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useMemo, Fragment } from 'react'
 import { motion } from 'framer-motion'
 import {
   Squares2X2Icon,
@@ -32,6 +32,7 @@ import {
   ArrowPathIcon,
   EyeIcon,
   CheckCircleIcon,
+  ClipboardDocumentListIcon,
 } from '@heroicons/react/24/outline'
 import { Link } from 'react-router-dom'
 import { Card, CardContent, CardHeader, CardTitle, Button, Skeleton } from '@/components/ui'
@@ -49,6 +50,41 @@ const COMPLETED_STAGE_COLOR = 0x666666
 
 // Playback speed in milliseconds
 const PLAYBACK_SPEED_MS = 3000 // 3 seconds per stage
+
+// Helper functions for stage display
+function getElementTypeLabel(elementType: string): string {
+  const lower = elementType.toLowerCase()
+  if (lower.includes('foot') || lower.includes('found') || lower.includes('pad')) return 'Foundations'
+  if (lower.includes('col')) return 'Columns'
+  if (lower.includes('beam') || lower.includes('girder')) return 'Beams'
+  return elementType
+}
+
+function getElementTypeBadgeColor(elementType: string): string {
+  const lower = elementType.toLowerCase()
+  if (lower.includes('foot') || lower.includes('found') || lower.includes('pad'))
+    return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400'
+  if (lower.includes('col'))
+    return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+  if (lower.includes('beam') || lower.includes('girder'))
+    return 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+  return 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-300'
+}
+
+function getReasoningFallback(elementType: string): string {
+  const lower = elementType.toLowerCase()
+  if (lower.includes('foot') || lower.includes('found') || lower.includes('pad'))
+    return 'Foundations are erected first to provide a stable base for the structure.'
+  if (lower.includes('col'))
+    return 'Columns establish the vertical structure and must be plumbed and secured before beams are placed.'
+  if (lower.includes('beam') || lower.includes('girder'))
+    return 'Beams connect columns and complete the structural frame at each level.'
+  return 'This stage follows the safe erection sequence for structural steel.'
+}
+
+function getActionLabel(elementType: string): string {
+  return `Erecting ${getElementTypeLabel(elementType)}`
+}
 
 interface GridSelection {
   vStart: string
@@ -109,14 +145,10 @@ export function ErectionSequenceBuilderPage() {
 
   const vAxes = useMemo(() => {
     if (!gridData || !gridData.v_axes || !Array.isArray(gridData.v_axes)) return []
-    return gridData.v_axes
+    // Sort by position ascending (left to right) — handles special tags like Y1 correctly
+    return [...gridData.v_axes]
+      .sort((a, b) => a.position - b.position)
       .map(a => a.tag)
-      .sort((a, b) => {
-        // Sort numbers numerically
-        const numA = parseInt(a) || 0
-        const numB = parseInt(b) || 0
-        return numA - numB
-      })
   }, [gridData])
 
   // Reset on model change
@@ -436,6 +468,9 @@ export function ErectionSequenceBuilderPage() {
     }
   }, [gridSelection, currentModel])
 
+  // Workflow progress: 1 = Select Area, 2 = Generate Sequence, 3 = Review Stages
+  const workflowStep = generatedStages.length > 0 ? 3 : gridSelection ? 2 : 1
+
   if (!currentModel) {
     return (
       <motion.div
@@ -479,315 +514,342 @@ export function ErectionSequenceBuilderPage() {
       onMouseUp={handleMouseUp}
       onMouseLeave={handleMouseUp}
     >
-      {/* Header */}
-      <div className="flex-shrink-0 px-6 pt-6 pb-4 border-b border-slate-200 dark:border-slate-700">
+      {/* Header with workflow progress */}
+      <div className="flex-shrink-0 px-6 pt-5 pb-4 border-b border-slate-200 dark:border-slate-700">
         <div className="flex justify-between items-start">
           <div>
             <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Erection Methodology</h1>
-            <p className="text-slate-500 dark:text-slate-400 mt-1">
-              Select grid area → Generate stages → View construction sequence
+            <p className="text-slate-500 dark:text-slate-400 mt-1 max-w-2xl text-sm">
+              Define the safe order for erecting structural steel. Select a building area, generate the erection sequence, then review each stage with your construction crew.
             </p>
           </div>
         </div>
+
+        {/* 3-step progress bar */}
+        <div className="mt-4 flex items-center gap-2">
+          {[
+            { step: 1, label: 'Select Area' },
+            { step: 2, label: 'Generate Sequence' },
+            { step: 3, label: 'Review Stages' },
+          ].map(({ step, label }, idx) => (
+            <Fragment key={step}>
+              {idx > 0 && (
+                <div className={cn(
+                  'flex-1 h-0.5 max-w-12',
+                  workflowStep > idx ? 'bg-green-500' : 'bg-slate-300 dark:bg-slate-600'
+                )} />
+              )}
+              <div className="flex items-center gap-2">
+                <div className={cn(
+                  'w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold',
+                  step < workflowStep
+                    ? 'bg-green-500 text-white'
+                    : step === workflowStep
+                      ? 'bg-blue-500 text-white'
+                      : 'bg-slate-200 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
+                )}>
+                  {step < workflowStep ? (
+                    <CheckCircleIcon className="w-4 h-4" />
+                  ) : (
+                    step
+                  )}
+                </div>
+                <span className={cn(
+                  'text-sm font-medium',
+                  step === workflowStep
+                    ? 'text-blue-700 dark:text-blue-300'
+                    : step < workflowStep
+                      ? 'text-green-600 dark:text-green-400'
+                      : 'text-slate-400 dark:text-slate-500'
+                )}>
+                  {label}
+                </span>
+              </div>
+            </Fragment>
+          ))}
+        </div>
       </div>
 
-      {/* Main Content */}
-      <div className="flex-1 grid grid-cols-2 gap-6 p-6 min-h-0 overflow-hidden">
-        {/* Left Panel - Grid Selector */}
-        <Card className="flex flex-col min-h-0 overflow-hidden">
-          <CardHeader className="py-3 flex-shrink-0">
-            <CardTitle className="flex items-center justify-between text-base">
-              <span className="flex items-center gap-2">
+      {/* Main Content - Asymmetric flex layout */}
+      <div className="flex-1 flex gap-4 p-4 min-h-0 overflow-hidden">
+
+        {/* Left Panel - Grid Selector + Stage List (narrow) */}
+        <div className="w-96 flex-shrink-0 flex flex-col gap-4 min-h-0 overflow-hidden">
+          <Card className="flex flex-col min-h-0 overflow-hidden flex-1">
+            <CardHeader className="py-3 flex-shrink-0">
+              <CardTitle className="flex items-center gap-2 text-base">
                 <Squares2X2Icon className="w-4 h-4" />
                 Select Grid Area
-              </span>
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="flex-1 overflow-auto">
-            {/* Instructions */}
-            {!gridSelection && generatedStages.length === 0 && (
-              <div className="mb-4 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-sm">
-                <p className="text-blue-700 dark:text-blue-300 font-medium">How to use:</p>
-                <ol className="text-slate-600 dark:text-slate-300 mt-2 space-y-1 list-decimal list-inside">
-                  <li>Click and drag on the grid to select an area</li>
-                  <li>Click "Generate Stages" to create Columns → Beams sequence</li>
-                  <li>Use the playback controls to step through stages</li>
-                </ol>
-              </div>
-            )}
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="flex-1 overflow-auto">
+              {/* Explanatory text */}
+              {!gridSelection && generatedStages.length === 0 && (
+                <div className="mb-4 p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 text-sm">
+                  <p className="text-slate-600 dark:text-slate-300">
+                    This grid represents your building's structural grid lines as seen from above. Drag to select the area you want to sequence.
+                  </p>
+                </div>
+              )}
 
-            {/* Grid Selector */}
-            {vAxes.length > 0 && uAxes.length > 0 ? (
-              <div className="space-y-4">
-                {/* Selected Range Display (draft selection) */}
-                {gridSelection && (
-                  <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <p className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Selected Range:</p>
-                        <p className="text-lg font-bold text-blue-700 dark:text-blue-300">
-                          Rows {gridSelection.uStart}–{gridSelection.uEnd}, Cols {gridSelection.vStart}–{gridSelection.vEnd}
-                        </p>
-                        <p className="text-xs text-blue-500 dark:text-blue-400 mt-1">
-                          ({gridSelection.uStart}{gridSelection.vStart} → {gridSelection.uEnd}{gridSelection.vEnd})
-                        </p>
+              {/* Grid */}
+              {vAxes.length > 0 && uAxes.length > 0 ? (
+                <div className="space-y-3">
+                  {/* Selected Range */}
+                  {gridSelection && (
+                    <div className="p-3 rounded-lg bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className="text-xs text-blue-600 dark:text-blue-400 font-medium mb-1">Selected Building Area:</p>
+                          <p className="text-base font-bold text-blue-700 dark:text-blue-300">
+                            Grid Lines {gridSelection.vStart}–{gridSelection.vEnd} / {gridSelection.uStart}–{gridSelection.uEnd}
+                          </p>
+                        </div>
+                        <button
+                          onClick={handleClearSelection}
+                          className="px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-800/50 hover:bg-blue-200 dark:hover:bg-blue-800 rounded transition-colors"
+                        >
+                          Clear
+                        </button>
                       </div>
-                      <button
-                        onClick={handleClearSelection}
-                        className="px-3 py-1.5 text-xs font-medium text-blue-700 dark:text-blue-300 bg-blue-100 dark:bg-blue-800/50 hover:bg-blue-200 dark:hover:bg-blue-800 rounded transition-colors"
-                      >
-                        Clear
-                      </button>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                {/* Grid Display */}
-                <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-4 bg-slate-50 dark:bg-slate-800/50 overflow-auto">
-                  <div className="inline-block min-w-max relative">
-                    {/* V axis labels (numbers) on top */}
-                    <div className="flex">
-                      <div className="w-8 h-6" /> {/* Corner spacer */}
-                      {vAxes.map(v => (
-                        <div key={v} className="w-8 h-6 text-xs text-slate-500 dark:text-slate-400 text-center font-medium">
-                          {v}
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* Grid cells with U axis labels (letters) on left */}
-                    {uAxes.map(u => (
-                      <div key={u} className="flex">
-                        <div className="w-8 h-8 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-center font-medium">
-                          {u}
-                        </div>
+                  {/* Grid Display - larger cells */}
+                  <div className="border border-slate-200 dark:border-slate-700 rounded-lg p-3 bg-slate-50 dark:bg-slate-800/50 overflow-auto">
+                    <div className="inline-block min-w-max relative">
+                      {/* V axis labels on top */}
+                      <div className="flex">
+                        <div className="w-8 h-6" />
                         {vAxes.map(v => (
-                          <div
-                            key={`${v}-${u}`}
-                            onMouseDown={() => handleCellMouseDown(v, u)}
-                            onMouseEnter={() => {
-                              handleCellMouseEnter(v, u)
-                              handleCellHover(v, u)
-                            }}
-                            onMouseLeave={() => setHoveredCell(null)}
-                            className={cn(
-                              'w-8 h-8 border-2 cursor-crosshair transition-all relative',
-                              isCellSelected(v, u)
-                                ? 'bg-blue-500/60 border-blue-600 dark:border-blue-400 shadow-sm'
-                                : (hoveredCell && hoveredCell.row === uAxes.indexOf(u) && hoveredCell.col === vAxes.indexOf(v))
-                                  ? 'bg-blue-300/40 border-blue-400' // Hover style
-                                  : 'border-slate-300 dark:border-slate-600 hover:bg-blue-100/50 dark:hover:bg-blue-900/30 hover:border-blue-400 dark:hover:border-blue-600'
-                            )}
-                            title={`Grid ${v} / ${u}`}
-                          >
-                            {isCellSelected(v, u) && (
-                              <div className="absolute inset-0 bg-blue-500/20 animate-pulse" />
-                            )}
+                          <div key={v} className="w-7 h-6 text-[10px] text-slate-500 dark:text-slate-400 text-center font-medium">
+                            {v}
                           </div>
                         ))}
                       </div>
-                    ))}
-                  </div>
-                </div>
 
-                {/* Generate Button & Options */}
-                {gridSelection && (
-                  <div className="p-4 bg-slate-100 dark:bg-slate-800 rounded-lg space-y-3">
-                    {/* Footing Toggle */}
-                    <div className="flex items-center justify-between p-2 rounded bg-slate-50 dark:bg-slate-900/50">
-                      <label htmlFor="footing-toggle" className="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer flex items-center gap-2">
-                        <input
-                          id="footing-toggle"
-                          type="checkbox"
-                          checked={includeFootings}
-                          onChange={(e) => setIncludeFootings(e.target.checked)}
-                          className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
-                        />
-                        <span>Include Footings</span>
-                      </label>
-                      <span className="text-xs text-slate-500 dark:text-slate-400">
-                        {includeFootings ? 'Footings → Columns → Beams' : 'Columns → Beams'}
-                      </span>
+                      {/* Grid cells with U axis labels */}
+                      {uAxes.map(u => (
+                        <div key={u} className="flex">
+                          <div className="w-7 h-7 text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-center font-medium">
+                            {u}
+                          </div>
+                          {vAxes.map(v => (
+                            <div
+                              key={`${v}-${u}`}
+                              onMouseDown={() => handleCellMouseDown(v, u)}
+                              onMouseEnter={() => {
+                                handleCellMouseEnter(v, u)
+                                handleCellHover(v, u)
+                              }}
+                              onMouseLeave={() => setHoveredCell(null)}
+                              className={cn(
+                                'w-7 h-7 border cursor-crosshair transition-all relative',
+                                isCellSelected(v, u)
+                                  ? 'bg-blue-500/60 border-blue-600 dark:border-blue-400 shadow-sm'
+                                  : (hoveredCell && hoveredCell.row === uAxes.indexOf(u) && hoveredCell.col === vAxes.indexOf(v))
+                                    ? 'bg-blue-300/40 border-blue-400'
+                                    : 'border-slate-300 dark:border-slate-600 hover:bg-blue-100/50 dark:hover:bg-blue-900/30 hover:border-blue-400 dark:hover:border-blue-600'
+                              )}
+                              title={`Grid ${v} / ${u}`}
+                            >
+                              {isCellSelected(v, u) && (
+                                <div className="absolute inset-0 bg-blue-500/20 animate-pulse" />
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ))}
                     </div>
-
-                    <div className="flex flex-col sm:flex-row gap-2">
-                      <Button
-                        onClick={handleApplySelectionToViewer}
-                        type="button"
-                        variant="outline"
-                        className="flex-1 px-4"
-                      >
-                        <EyeIcon className="w-4 h-4 mr-2" />
-                        Apply Selection to Viewer
-                      </Button>
-                      <Button
-                        onClick={handleGenerateStages}
-                        disabled={isGenerating}
-                        className="flex-1 px-4"
-                      >
-                        {isGenerating ? (
-                          <>
-                            <ArrowPathIcon className="w-4 h-4 mr-2 animate-spin" />
-                            Generating Stages...
-                          </>
-                        ) : (
-                          <>
-                            <DocumentTextIcon className="w-4 h-4 mr-2" />
-                            Generate Stages
-                          </>
-                        )}
-                      </Button>
-                    </div>
-                    {!isGenerating && (
-                      <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
-                        This will create {includeFootings ? 'Footings → ' : ''}Columns → Beams sequence for the selected area
-                      </p>
-                    )}
                   </div>
-                )}
 
-                {/* Generated Stages List */}
-                {generatedStages.length > 0 && (
-                  <div className="border-t border-slate-200 dark:border-slate-700 pt-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <h3 className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-2">
-                        <DocumentTextIcon className="w-4 h-4" />
-                        Stages ({generatedStages.length})
-                      </h3>
-
-                      {/* Playback Controls */}
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={handleReset}
-                          className="p-1.5 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300"
-                          title="Reset View"
-                        >
-                          <ArrowPathIcon className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={handlePrevStage}
-                          disabled={currentStageIndex <= 0}
-                          className="p-1.5 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Previous Stage"
-                        >
-                          <ChevronLeftIcon className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={handlePlayPause}
-                          className={cn(
-                            'p-2 rounded transition-colors',
-                            isPlaying
-                              ? 'bg-orange-500 hover:bg-orange-600 text-white'
-                              : 'bg-green-500 hover:bg-green-600 text-white'
-                          )}
-                          title={isPlaying ? 'Pause' : 'Play Sequence'}
-                        >
-                          {isPlaying ? (
-                            <PauseIcon className="w-4 h-4" />
-                          ) : (
-                            <PlayIcon className="w-4 h-4" />
-                          )}
-                        </button>
-                        <button
-                          onClick={handleNextStage}
-                          disabled={currentStageIndex >= generatedStages.length - 1}
-                          className="p-1.5 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Next Stage"
-                        >
-                          <ChevronRightIcon className="w-4 h-4" />
-                        </button>
+                  {/* Generate Button & Options */}
+                  {gridSelection && (
+                    <div className="p-3 bg-slate-100 dark:bg-slate-800 rounded-lg space-y-2">
+                      {/* Foundation Toggle */}
+                      <div className="flex items-center justify-between p-2 rounded bg-slate-50 dark:bg-slate-900/50">
+                        <label htmlFor="footing-toggle" className="text-sm font-medium text-slate-700 dark:text-slate-300 cursor-pointer flex items-center gap-2">
+                          <input
+                            id="footing-toggle"
+                            type="checkbox"
+                            checked={includeFootings}
+                            onChange={(e) => setIncludeFootings(e.target.checked)}
+                            className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                          />
+                          <span>Include Foundations</span>
+                        </label>
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                          {includeFootings ? 'Foundations → Columns → Beams' : 'Columns → Beams'}
+                        </span>
                       </div>
+
+                      <div className="flex flex-col gap-2">
+                        <Button
+                          onClick={handleApplySelectionToViewer}
+                          type="button"
+                          variant="outline"
+                          className="w-full px-4"
+                        >
+                          <EyeIcon className="w-4 h-4 mr-2" />
+                          Preview Area in 3D
+                        </Button>
+                        <Button
+                          onClick={handleGenerateStages}
+                          disabled={isGenerating}
+                          className="w-full px-4"
+                        >
+                          {isGenerating ? (
+                            <>
+                              <ArrowPathIcon className="w-4 h-4 mr-2 animate-spin" />
+                              Generating...
+                            </>
+                          ) : (
+                            <>
+                              <DocumentTextIcon className="w-4 h-4 mr-2" />
+                              Generate Erection Sequence
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      {!isGenerating && (
+                        <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+                          Generates a safe erection order: foundations provide stability, columns establish the frame, beams complete the structure.
+                        </p>
+                      )}
                     </div>
+                  )}
 
-                    {/* Stage List */}
-                    <div className="space-y-2">
-                      {generatedStages.map((stage, idx) => {
-                        const isComplete = idx < currentStageIndex
-                        const isCurrent = idx === currentStageIndex
+                  {/* Stage List */}
+                  {generatedStages.length > 0 && (
+                    <div className="border-t border-slate-200 dark:border-slate-700 pt-3">
+                      <div className="flex items-center justify-between mb-2">
+                        <h3 className="text-sm font-medium text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                          <DocumentTextIcon className="w-4 h-4" />
+                          Stages ({generatedStages.length})
+                        </h3>
 
-                        return (
-                          <div
-                            key={stage.stage_id}
-                            onClick={() => goToStage(idx)}
-                            className={cn(
-                              'p-3 rounded-lg border cursor-pointer transition-all',
-                              isCurrent
-                                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                                : isComplete
-                                  ? 'border-slate-300 dark:border-slate-600 bg-slate-50 dark:bg-slate-800/50'
-                                  : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/30'
-                            )}
+                        {/* Playback Controls */}
+                        <div className="flex items-center gap-1">
+                          <button
+                            onClick={handleReset}
+                            className="p-1 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300"
+                            title="Reset View"
                           >
-                            <div className="flex items-center gap-3">
-                              <div
-                                className={cn(
-                                  'flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold',
+                            <ArrowPathIcon className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={handlePrevStage}
+                            disabled={currentStageIndex <= 0}
+                            className="p-1 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Previous Stage"
+                          >
+                            <ChevronLeftIcon className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={handlePlayPause}
+                            className={cn(
+                              'p-1.5 rounded transition-colors',
+                              isPlaying
+                                ? 'bg-orange-500 hover:bg-orange-600 text-white'
+                                : 'bg-green-500 hover:bg-green-600 text-white'
+                            )}
+                            title={isPlaying ? 'Pause' : 'Play Sequence'}
+                          >
+                            {isPlaying ? (
+                              <PauseIcon className="w-3.5 h-3.5" />
+                            ) : (
+                              <PlayIcon className="w-3.5 h-3.5" />
+                            )}
+                          </button>
+                          <button
+                            onClick={handleNextStage}
+                            disabled={currentStageIndex >= generatedStages.length - 1}
+                            className="p-1 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Next Stage"
+                          >
+                            <ChevronRightIcon className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Stage Cards */}
+                      <div className="space-y-2">
+                        {generatedStages.map((stage, idx) => {
+                          const isComplete = idx < currentStageIndex
+                          const isCurrent = idx === currentStageIndex
+                          const typeLabel = getElementTypeLabel(stage.element_type)
+                          const badgeColor = getElementTypeBadgeColor(stage.element_type)
+
+                          return (
+                            <div
+                              key={stage.stage_id}
+                              onClick={() => goToStage(idx)}
+                              className={cn(
+                                'p-2.5 rounded-lg border cursor-pointer transition-all',
+                                isCurrent
+                                  ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
+                                  : isComplete
+                                    ? 'border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/10'
+                                    : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/30'
+                              )}
+                            >
+                              <div className="flex items-center gap-2.5">
+                                <div className={cn(
+                                  'flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold',
                                   isCurrent
                                     ? 'bg-blue-500 text-white'
                                     : isComplete
-                                      ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
+                                      ? 'bg-green-500 text-white'
                                       : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
-                                )}
-                              >
-                                {isComplete ? (
-                                  <CheckCircleIcon className="w-5 h-5" />
-                                ) : (
-                                  stage.stage_id
-                                )}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <h4 className={cn(
-                                  'text-sm font-medium truncate',
-                                  isCurrent ? 'text-blue-700 dark:text-blue-300' : 'text-slate-700 dark:text-slate-200'
                                 )}>
-                                  {stage.name}
-                                </h4>
-                                <p className="text-xs text-slate-500 dark:text-slate-400">
-                                  {stage.element_count} elements
-                                </p>
-                              </div>
-                              {isCurrent && (
-                                <div className="flex-shrink-0">
-                                  <EyeIcon className="w-5 h-5 text-blue-500" />
+                                  {isComplete ? (
+                                    <CheckCircleIcon className="w-4 h-4" />
+                                  ) : (
+                                    stage.stage_id
+                                  )}
                                 </div>
-                              )}
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <h4 className={cn(
+                                      'text-sm font-medium truncate',
+                                      isCurrent
+                                        ? 'text-blue-700 dark:text-blue-300'
+                                        : isComplete
+                                          ? 'text-green-700 dark:text-green-300'
+                                          : 'text-slate-700 dark:text-slate-200'
+                                    )}>
+                                      {stage.name}
+                                    </h4>
+                                    <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-full whitespace-nowrap', badgeColor)}>
+                                      {typeLabel}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">
+                                    {stage.description || getReasoningFallback(stage.element_type)}
+                                  </p>
+                                  <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">
+                                    {stage.element_count} elements
+                                  </p>
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-
-                    {/* Legend */}
-                    <div className="mt-4 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mb-2">3D View Legend:</p>
-                      <div className="flex gap-4 text-xs">
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 rounded" style={{ backgroundColor: '#ff00ff' }} />
-                          <span className="text-slate-600 dark:text-slate-300">Current Stage</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 rounded bg-gray-500 opacity-50" />
-                          <span className="text-slate-600 dark:text-slate-300">Completed</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 rounded border border-slate-400 dark:border-slate-600" />
-                          <span className="text-slate-600 dark:text-slate-300">Hidden</span>
-                        </div>
+                          )
+                        })}
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-slate-500 dark:text-slate-400">
-                <p>No grid detected in this model.</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                  )}
+                </div>
+              ) : (
+                <div className="text-center py-8 text-slate-500 dark:text-slate-400">
+                  <p>No grid detected in this model.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
-        {/* Right Panel - Viewer */}
-        <Card className="flex flex-col min-h-0 overflow-hidden">
+        {/* Center Panel - 3D Viewer (takes most space) */}
+        <Card className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <CardHeader className="py-3 flex-shrink-0">
             <CardTitle className="flex items-center justify-between text-base">
               <div className="flex items-center gap-3">
@@ -821,43 +883,64 @@ export function ErectionSequenceBuilderPage() {
               </div>
               <div className="flex items-center gap-3">
                 {viewMode === 'plan' && (
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <span>Grid overlay</span>
-                    <input
-                      type="range"
-                      min={0}
-                      max={1}
-                      step={0.1}
-                      value={gridOverlayOpacity}
-                      onChange={(e) => setGridOverlayOpacity(parseFloat(e.target.value))}
-                      className="w-24"
-                    />
-                  </div>
-                )}
-                {/* Transparency Slider */}
-                {viewMode === 'plan' && (
-                  <div className="flex items-center gap-2 text-xs text-slate-400">
-                    <span>Model Opacity</span>
-                    <input
-                      type="range"
-                      min={0.1}
-                      max={1}
-                      step={0.1}
-                      value={modelOpacity}
-                      onChange={(e) => setModelOpacity(parseFloat(e.target.value))}
-                      className="w-24"
-                    />
-                  </div>
-                )}
-                {currentStageIndex >= 0 && generatedStages[currentStageIndex] && (
-                  <span className="text-sm px-3 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 font-medium">
-                    {generatedStages[currentStageIndex].name}
-                  </span>
+                  <>
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span>Grid overlay</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={1}
+                        step={0.1}
+                        value={gridOverlayOpacity}
+                        onChange={(e) => setGridOverlayOpacity(parseFloat(e.target.value))}
+                        className="w-24"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                      <span>Model Opacity</span>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={1}
+                        step={0.1}
+                        value={modelOpacity}
+                        onChange={(e) => setModelOpacity(parseFloat(e.target.value))}
+                        className="w-24"
+                      />
+                    </div>
+                  </>
                 )}
               </div>
             </CardTitle>
           </CardHeader>
           <CardContent noPadding className="flex-1 relative min-h-0">
+            {/* Stage progress indicator above viewer */}
+            {generatedStages.length > 0 && currentStageIndex >= 0 && (
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-3 px-4 py-2 rounded-full bg-white/90 dark:bg-slate-800/90 backdrop-blur shadow-lg border border-slate-200 dark:border-slate-700">
+                <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                  Stage {currentStageIndex + 1} of {generatedStages.length}
+                </span>
+                <div className="flex gap-1">
+                  {generatedStages.map((_, idx) => (
+                    <div
+                      key={idx}
+                      className={cn(
+                        'w-6 h-2 rounded-full transition-colors',
+                        idx < currentStageIndex
+                          ? 'bg-green-500'
+                          : idx === currentStageIndex
+                            ? 'bg-blue-500'
+                            : 'bg-slate-300 dark:bg-slate-600'
+                      )}
+                    />
+                  ))}
+                </div>
+                <span className="text-xs text-slate-500 dark:text-slate-400">
+                  {getActionLabel(generatedStages[currentStageIndex].element_type)}
+                </span>
+              </div>
+            )}
+
             <IFCViewer
               ref={viewerRef}
               fileId={currentModel.file_id}
@@ -867,7 +950,6 @@ export function ErectionSequenceBuilderPage() {
               mode={viewMode === 'plan' ? 'plan' : '3d'}
               gridOverlayOpacity={gridOverlayOpacity}
               modelOpacity={modelOpacity}
-              // Selection Sync
               draftSelection={gridSelection ? {
                 uStart: gridSelection.uStart,
                 uEnd: gridSelection.uEnd,
@@ -880,10 +962,31 @@ export function ErectionSequenceBuilderPage() {
                 vStart: appliedSelection.vStart,
                 vEnd: appliedSelection.vEnd
               } : null}
-              // Hover Sync
               hoverCell={hoveredCell}
               onOverlayHover={handleViewerHover}
             />
+
+            {/* Floating 3D Legend */}
+            {generatedStages.length > 0 && (
+              <div className="absolute bottom-3 left-3 z-20 px-3 py-2 rounded-lg bg-white/80 dark:bg-slate-800/80 backdrop-blur border border-slate-200 dark:border-slate-700 shadow">
+                <p className="text-[10px] font-medium text-slate-500 dark:text-slate-400 mb-1.5">Legend</p>
+                <div className="flex flex-col gap-1.5 text-xs">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3.5 h-3.5 rounded" style={{ backgroundColor: '#ff00ff' }} />
+                    <span className="text-slate-600 dark:text-slate-300">Current Stage</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3.5 h-3.5 rounded bg-gray-500 opacity-50" />
+                    <span className="text-slate-600 dark:text-slate-300">Completed</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="w-3.5 h-3.5 rounded border border-slate-400 dark:border-slate-600" />
+                    <span className="text-slate-600 dark:text-slate-300">Remaining</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {!isViewerReady && (
               <div className="absolute inset-0 flex items-center justify-center bg-slate-100/80 dark:bg-slate-900/80 z-10">
                 <div className="text-center">
@@ -894,7 +997,92 @@ export function ErectionSequenceBuilderPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* Right Panel - Stage Detail (conditional, appears when a stage is selected) */}
+        {currentStageIndex >= 0 && generatedStages[currentStageIndex] && (
+          <div className="w-80 flex-shrink-0 min-h-0 overflow-hidden">
+            <Card className="h-full flex flex-col min-h-0 overflow-hidden">
+              <CardHeader className="py-3 flex-shrink-0 border-b border-slate-200 dark:border-slate-700">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <ClipboardDocumentListIcon className="w-4 h-4" />
+                  Stage Details
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="flex-1 overflow-auto py-4 space-y-4">
+                {(() => {
+                  const stage = generatedStages[currentStageIndex]
+                  const typeLabel = getElementTypeLabel(stage.element_type)
+                  const badgeColor = getElementTypeBadgeColor(stage.element_type)
+                  return (
+                    <>
+                      {/* Stage title + badge */}
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                            {stage.name}
+                          </h3>
+                          <span className={cn('text-xs font-semibold px-2 py-0.5 rounded-full', badgeColor)}>
+                            {typeLabel}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Grid area: {stage.grid_range}
+                        </p>
+                      </div>
+
+                      {/* Why this stage */}
+                      <div className="p-3 rounded-lg bg-amber-50 dark:bg-amber-900/10 border border-amber-200 dark:border-amber-800">
+                        <p className="text-xs font-medium text-amber-700 dark:text-amber-400 mb-1">Why this stage?</p>
+                        <p className="text-sm text-amber-800 dark:text-amber-300">
+                          {stage.description || getReasoningFallback(stage.element_type)}
+                        </p>
+                      </div>
+
+                      {/* Construction Instructions */}
+                      {stage.instructions && stage.instructions.length > 0 && (
+                        <div>
+                          <h4 className="text-sm font-medium text-slate-700 dark:text-slate-200 mb-2 flex items-center gap-1.5">
+                            <ClipboardDocumentListIcon className="w-4 h-4" />
+                            Construction Instructions
+                          </h4>
+                          <ol className="space-y-2">
+                            {stage.instructions.map((instruction, i) => (
+                              <li key={i} className="flex gap-2.5 text-sm">
+                                <span className="flex-shrink-0 w-5 h-5 rounded-full bg-slate-200 dark:bg-slate-700 flex items-center justify-center text-[10px] font-bold text-slate-600 dark:text-slate-300 mt-0.5">
+                                  {i + 1}
+                                </span>
+                                <span className="text-slate-600 dark:text-slate-300">{instruction}</span>
+                              </li>
+                            ))}
+                          </ol>
+                        </div>
+                      )}
+
+                      {/* Summary stats */}
+                      <div className="p-3 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700">
+                        <div className="grid grid-cols-2 gap-3 text-sm">
+                          <div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">Elements</p>
+                            <p className="font-semibold text-slate-700 dark:text-slate-200">{stage.element_count}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">Type</p>
+                            <p className="font-semibold text-slate-700 dark:text-slate-200">{typeLabel}</p>
+                          </div>
+                          <div className="col-span-2">
+                            <p className="text-xs text-slate-500 dark:text-slate-400">Grid Area</p>
+                            <p className="font-semibold text-slate-700 dark:text-slate-200">{stage.grid_range}</p>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  )
+                })()}
+              </CardContent>
+            </Card>
+          </div>
+        )}
       </div>
-    </motion.div >
+    </motion.div>
   )
 }

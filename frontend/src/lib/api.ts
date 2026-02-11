@@ -3,7 +3,6 @@
  * Centralized API communication layer with type safety
  */
 import axios, { AxiosInstance, AxiosError } from 'axios'
-import toast from 'react-hot-toast'
 
 // =============================================================================
 // Types
@@ -249,12 +248,9 @@ class APIClient {
     })
 
     // Response interceptor for error handling
+    // Note: We do NOT show toasts here because callers handle their own error
+    // messages. Showing toast here would cause double-toasts.
     const errorHandler = (error: AxiosError<{ detail?: string }>) => {
-      const message = error.response?.data?.detail || error.message || 'An error occurred'
-      // Don't show toast for timeout errors during wake-up
-      if (!error.message?.includes('timeout')) {
-        toast.error(message)
-      }
       return Promise.reject(error)
     }
 

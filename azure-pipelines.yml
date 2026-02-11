@@ -1,0 +1,159 @@
+# =============================================================================
+# Azure DevOps Pipeline - IFC AI POC
+# =============================================================================
+# Organization: husseinsrour0484
+# Project: IFC-AI-POC
+#
+# FLOW:
+#   Push to main → Build Frontend + Package Backend → Deploy to DEV (auto)
+#
+# Architecture:
+#   Single Python App Service serving both FastAPI backend and React frontend.
+#   Frontend is built by CI, served as static files by FastAPI catch-all route.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    exclude:
+      - README.md
+      - docs/**
+
+pr:
+  branches:
+    include:
+      - main
+
+variables:
+  - name: nodeVersion
+    value: '20.x'
+  - name: pythonVersion
+    value: '3.11'
+  - name: azureSubscription
+    value: 'Azure subscription 1'
+  - name: projectName
+    value: 'ifc-ai-poc'
+  - name: resourceGroup
+    value: 'ifc-ai-poc-rg'
+
+stages:
+  # ==========================================================================
+  # Stage 1: Build Frontend + Package Everything
+  # ==========================================================================
+  - stage: Build
+    displayName: 'Build & Package'
+    jobs:
+      - job: BuildJob
+        displayName: 'Build Application'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          # -- Python setup (verify requirements) --
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+            displayName: 'Use Python $(pythonVersion)'
+
+          # -- Node.js setup for frontend build --
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(nodeVersion)'
+            displayName: 'Use Node.js $(nodeVersion)'
+
+          # -- Build Frontend --
+          - script: |
+              cd frontend
+              npm ci
+              npm run build
+            displayName: 'Build React frontend'
+
+          # -- Verify frontend build output --
+          - script: |
+              echo "Frontend build output:"
+              ls -la frontend/dist/
+              echo "---"
+              ls -la frontend/dist/assets/ || echo "No assets dir"
+            displayName: 'Verify frontend build'
+
+          # -- Create deployment package --
+          # Include: backend/, frontend/dist/, uploads/.gitkeep, outputs/.gitkeep
+          - script: |
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy
+
+              # Copy backend
+              cp -r backend $(Build.ArtifactStagingDirectory)/deploy/
+
+              # Copy built frontend
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/frontend
+              cp -r frontend/dist $(Build.ArtifactStagingDirectory)/deploy/frontend/
+
+              # Create upload/output directories (empty, for runtime)
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/uploads
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/exports
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/takeoffs
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/storey_ifcs
+              mkdir -p $(Build.ArtifactStagingDirectory)/deploy/outputs/reviews
+
+              # Copy root files
+              cp .gitignore $(Build.ArtifactStagingDirectory)/deploy/ 2>/dev/null || true
+
+              echo "Deployment package contents:"
+              find $(Build.ArtifactStagingDirectory)/deploy -maxdepth 3 -type f | head -30
+            displayName: 'Create deployment package'
+
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/deploy'
+              includeRootFolder: false
+              archiveType: 'zip'
+              archiveFile: '$(Build.ArtifactStagingDirectory)/deploy.zip'
+              replaceExistingArchive: true
+            displayName: 'Archive deployment package'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)/deploy.zip'
+              artifactName: 'drop'
+            displayName: 'Publish artifact'
+
+  # ==========================================================================
+  # Stage 2: Deploy to DEV (Automatic)
+  # ==========================================================================
+  - stage: DeployDev
+    displayName: 'Deploy to DEV'
+    dependsOn: Build
+    condition: succeeded()
+    jobs:
+      - deployment: DeployDevJob
+        displayName: 'Deploy to DEV Environment'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'ifc-ai-poc-DEV'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: drop
+                  displayName: 'Download artifact'
+
+                - task: AzureWebApp@1
+                  inputs:
+                    azureSubscription: '$(azureSubscription)'
+                    appType: 'webAppLinux'
+                    appName: '$(projectName)-dev'
+                    resourceGroupName: '$(resourceGroup)'
+                    package: '$(Pipeline.Workspace)/drop/deploy.zip'
+                    startUpCommand: 'cd backend && pip install -r requirements.txt && gunicorn app.main:app --workers 2 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000 --timeout 600'
+                  displayName: 'Deploy to DEV Web App'
+
+                - script: |
+                    echo "=================================="
+                    echo "DEV Deployment Complete!"
+                    echo "URL: https://$(projectName)-dev.azurewebsites.net"
+                    echo "API Docs: https://$(projectName)-dev.azurewebsites.net/api/docs"
+                    echo "Health: https://$(projectName)-dev.azurewebsites.net/api/health"
+                    echo "=================================="
+                  displayName: 'Deployment summary'

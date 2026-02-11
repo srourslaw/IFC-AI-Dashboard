@@ -43,21 +43,20 @@ def get_methodology_data(file_id: str) -> Dict[str, Any]:
 
     stages_data = []
     for stage in service.stages:
-        stage_dict = stage.to_dict()
-        # Get element IDs for this stage
+        # stage.elements contains global_ids — look up express_ids
         element_ids = []
-        for elem in service.elements.values():
-            if hasattr(elem, 'stage_id') and elem.stage_id == stage.stage_id:
-                element_ids.append(elem.express_id)
-            elif hasattr(stage, 'elements') and elem.global_id in stage.elements:
+        stage_element_set = set(stage.elements)
+        for global_id in stage_element_set:
+            elem = service.elements.get(global_id)
+            if elem:
                 element_ids.append(elem.express_id)
 
         stages_data.append({
-            "stage_id": stage_dict.get("stage_id", ""),
-            "name": stage_dict.get("name", ""),
-            "element_type": stage_dict.get("element_type", ""),
-            "zone_id": stage_dict.get("zone_id", 0),
-            "sequence_order": stage_dict.get("sequence_order", 0),
+            "stage_id": stage.stage_id,
+            "name": stage.name,
+            "element_type": stage.element_type,
+            "zone_id": stage.zone_id,
+            "sequence_order": stage.sequence_order,
             "element_ids": element_ids,
         })
 

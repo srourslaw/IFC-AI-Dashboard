@@ -142,6 +142,7 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
     const overlayCountsRef = useRef<{ rows: number; cols: number }>({ rows: 0, cols: 0 })
     const overlayRotationRef = useRef<number>(0)
     const modelOpacityRef = useRef<number>(1)
+    const modelOffsetRef = useRef<THREE.Vector3 | null>(null)
 
     // --- Interaction & Updates ---
 
@@ -160,19 +161,21 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
         return
       }
 
-      // Sort axes to match GridSelector order
-      // U axes: position descending (high positions at top)
-      // V axes: tag number ascending
-      const uAxes = [...gridData.u_axes].sort((a, b) => b.position - a.position)
-      const vAxes = [...gridData.v_axes].sort((a, b) => (parseInt(a.tag) || 0) - (parseInt(b.tag) || 0))
+      // Sort axes by position ascending for correct spatial mapping
+      const uAxes = [...gridData.u_axes].sort((a, b) => a.position - b.position)
+      const vAxes = [...gridData.v_axes].sort((a, b) => a.position - b.position)
 
-      // Convert selection to indices
-      let uIdxStart = typeof selection.uStart === 'number' ? selection.uStart : uAxes.findIndex(a => a.tag === selection.uStart)
-      let uIdxEnd = typeof selection.uEnd === 'number' ? selection.uEnd : uAxes.findIndex(a => a.tag === selection.uEnd)
-      let vIdxStart = typeof selection.vStart === 'number' ? selection.vStart : vAxes.findIndex(a => a.tag === selection.vStart)
-      let vIdxEnd = typeof selection.vEnd === 'number' ? selection.vEnd : vAxes.findIndex(a => a.tag === selection.vEnd)
+      // Find start/end axis tags in the sorted arrays
+      const findAxis = (axes: typeof uAxes, tag: string | number) => {
+        if (typeof tag === 'number') return tag < axes.length ? tag : -1
+        return axes.findIndex(a => a.tag === tag)
+      }
 
-      // Normalize to min/max
+      const uIdxStart = findAxis(uAxes, selection.uStart)
+      const uIdxEnd = findAxis(uAxes, selection.uEnd)
+      const vIdxStart = findAxis(vAxes, selection.vStart)
+      const vIdxEnd = findAxis(vAxes, selection.vEnd)
+
       const uMin = Math.min(uIdxStart, uIdxEnd)
       const uMax = Math.max(uIdxStart, uIdxEnd)
       const vMin = Math.min(vIdxStart, vIdxEnd)
@@ -183,32 +186,38 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
         return
       }
 
-      // Map indices to overlay local coordinates
+      // Map axis positions to overlay local coordinates using model offset
       const bounds = overlayBoundsRef.current
+      const mOff = modelOffsetRef.current
+      if (!mOff) {
+        mesh.visible = false
+        return
+      }
       const width = bounds.max.x - bounds.min.x
       const depth = bounds.max.z - bounds.min.z
       const halfW = width / 2
-      const halfD = depth / 2
       const startX = -halfW
+      const halfD = depth / 2
       const startZ = -halfD
 
-      // V (columns) -> X axis
-      const cellW = width / Math.max(1, vAxes.length - 1)
-      const selWidth = (vMax - vMin + 1) * cellW
-      const centerX = startX + vMin * cellW + selWidth / 2
+      // U-axes map to X using actual IFC coordinates + model offset
+      const selUStartPos = uAxes[uMin].position
+      const selUEndPos = uAxes[uMax].position
+      const x1 = startX + (selUStartPos + mOff.x)
+      const x2 = startX + (selUEndPos + mOff.x)
+      const selWidth = Math.abs(x2 - x1) || width / uAxes.length
+      const centerX = (x1 + x2) / 2
 
-      // U (rows) -> Z axis
-      // IMPORTANT: U axes are sorted by position DESCENDING (top of grid = highest position = lowest index)
-      // In 3D space, higher positions correspond to higher Z values (top of model)
-      // So we need to INVERT the mapping: row 0 should be at max Z, not min Z
-      const cellD = depth / Math.max(1, uAxes.length - 1)
-      const selDepth = (uMax - uMin + 1) * cellD
-      // Invert: row index 0 -> max Z (top), higher row indices -> lower Z (bottom)
-      const invertedUMin = (uAxes.length - 1) - uMax
-      const centerZ = startZ + invertedUMin * cellD + selDepth / 2
+      // V-axes map to Z using actual IFC coordinates + model offset
+      const selVStartPos = vAxes[vMin].position
+      const selVEndPos = vAxes[vMax].position
+      const z1 = startZ + (selVStartPos + mOff.z)
+      const z2 = startZ + (selVEndPos + mOff.z)
+      const selDepth = Math.abs(z2 - z1) || depth / vAxes.length
+      const centerZ = (z1 + z2) / 2
 
       mesh.position.set(centerX, 0, centerZ)
-      mesh.scale.set(selWidth - 0.1, selDepth - 0.1, 1)
+      mesh.scale.set(selWidth, selDepth, 1)
       mesh.visible = true
 
     }, [gridData])
@@ -225,16 +234,28 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
 
     // Update Hover Selection
     useEffect(() => {
-      // internal hover handled by raycaster, but external hover (hoverCell prop) handled here
-      if (hoverCell) {
-        updateSelectionMesh('hover-selection', {
-          uStart: hoverCell.row, uEnd: hoverCell.row,
-          vStart: hoverCell.col, vEnd: hoverCell.col
-        })
+      // Convert numeric row/col indices to axis tags for correct positioning.
+      // Row index is in descending-sorted U-axes (matching grid table),
+      // Col index is in ascending-sorted V-axes (matching grid table).
+      if (hoverCell && gridData) {
+        const uAxesDesc = [...gridData.u_axes].sort((a, b) => b.position - a.position)
+        const vAxesAsc = [...gridData.v_axes].sort((a, b) => a.position - b.position)
+
+        const uTag = uAxesDesc[hoverCell.row]?.tag
+        const vTag = vAxesAsc[hoverCell.col]?.tag
+
+        if (uTag && vTag) {
+          updateSelectionMesh('hover-selection', {
+            uStart: uTag, uEnd: uTag,
+            vStart: vTag, vEnd: vTag
+          })
+        } else {
+          updateSelectionMesh('hover-selection', null)
+        }
       } else {
         updateSelectionMesh('hover-selection', null)
       }
-    }, [hoverCell, updateSelectionMesh])
+    }, [hoverCell, updateSelectionMesh, gridData])
 
 
     // Raycaster for Hover detection
@@ -271,16 +292,35 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
           const nx = (localPt.x + halfW) / width
           const nz = (localPt.z + halfD) / depth
 
-          if (nx >= 0 && nx <= 1 && nz >= 0 && nz <= 1) {
-            // Sort axes to match GridSelector
-            const uAxes = [...gridData.u_axes].sort((a, b) => b.position - a.position)
-            const vAxes = [...gridData.v_axes].sort((a, b) => (parseInt(a.tag) || 0) - (parseInt(b.tag) || 0))
+          if (nx >= 0 && nx <= 1 && nz >= 0 && nz <= 1 && modelOffsetRef.current) {
+            const mOff = modelOffsetRef.current
 
-            // Map normalized coords to indices
-            const uIdx = Math.floor(nz * (uAxes.length - 1))
-            const vIdx = Math.floor(nx * (vAxes.length - 1))
+            // Convert overlay local coordinates to IFC coordinates
+            const ifcX = localPt.x + halfW - mOff.x
+            const ifcY = localPt.z + halfD - mOff.z
 
-            onOverlayHover({ row: uIdx, col: vIdx })
+            // Sort axes by position ascending for spatial lookup
+            const uAxesSorted = [...gridData.u_axes].sort((a, b) => a.position - b.position)
+            const vAxesSorted = [...gridData.v_axes].sort((a, b) => a.position - b.position)
+
+            // Find nearest U-axis cell by IFC X position
+            let uCellIdx = 0
+            for (let i = 0; i < uAxesSorted.length - 1; i++) {
+              const mid = (uAxesSorted[i].position + uAxesSorted[i + 1].position) / 2
+              if (ifcX > mid) uCellIdx = i + 1
+            }
+
+            // Find nearest V-axis cell by IFC Y position
+            let vCellIdx = 0
+            for (let i = 0; i < vAxesSorted.length - 1; i++) {
+              const mid = (vAxesSorted[i].position + vAxesSorted[i + 1].position) / 2
+              if (ifcY > mid) vCellIdx = i + 1
+            }
+
+            // Convert ascending U index to descending index (matching grid table row order)
+            const uDescIdx = uAxesSorted.length - 1 - uCellIdx
+
+            onOverlayHover({ row: uDescIdx, col: vCellIdx })
             return
           }
         }
@@ -854,6 +894,7 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
             modelOffset.x = -box.min.x
             modelOffset.y = 0  // Keep Y as-is (vertical)
             modelOffset.z = -box.min.z
+            modelOffsetRef.current = modelOffset.clone()
 
             // Apply offset to all meshes (except ground)
             scene.traverse((obj: THREE.Object3D) => {
@@ -969,21 +1010,22 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
               const positionsMain: number[] = []
               const positionsMajor: number[] = []
 
-              // Sort by position descending to match GridSelector ordering
-              const uAxes = gridData?.u_axes ? [...gridData.u_axes].sort((a, b) => b.position - a.position) : []
-              const vAxes = gridData?.v_axes ? [...gridData.v_axes].sort((a, b) => (parseInt(a.tag) || 0) - (parseInt(b.tag) || 0)) : []
+              // Sort axes by position ascending for correct spatial mapping
+              const uAxesSorted = gridData?.u_axes ? [...gridData.u_axes].sort((a, b) => a.position - b.position) : []
+              const vAxesSorted = gridData?.v_axes ? [...gridData.v_axes].sort((a, b) => a.position - b.position) : []
 
               // Reuse logic for even/explicit
-              const useExplicit = uAxes.length > 0 && vAxes.length > 0
+              const useExplicit = uAxesSorted.length > 0 && vAxesSorted.length > 0
 
-              if (useExplicit) {
-                // V-lines (along Z, vary X)
-                vAxes.forEach((_, i) => {
-                  // Position relative to bounds min, then shifted to local center
-                  // Assuming uniform distribution for fallback if no explicit positions
-                  // If we had explicit positions, we'd map them here. 
-                  const t = i / (Math.max(1, vAxes.length - 1))
-                  const x = startX + t * width
+              if (useExplicit && modelOffsetRef.current) {
+                // Use model offset to place grid lines at their actual IFC coordinates,
+                // converted to overlay local space (centered at model center).
+                const mOff = modelOffsetRef.current
+
+                // U-axis lines: vertical lines at actual IFC X positions
+                uAxesSorted.forEach((axis, i) => {
+                  const x = startX + (axis.position + mOff.x)
+                  if (x < startX - 1 || x > endX + 1) return
                   const isMajor = i % 5 === 0
                   if (isMajor) {
                     positionsMajor.push(x, 0, startZ, x, 0, endZ)
@@ -991,10 +1033,10 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
                     positionsMain.push(x, 0, startZ, x, 0, endZ)
                   }
                 })
-                // U-lines (along X, vary Z)
-                uAxes.forEach((_, i) => {
-                  const t = i / (Math.max(1, uAxes.length - 1))
-                  const z = startZ + t * depth
+                // V-axis lines: horizontal lines at actual IFC Y positions
+                vAxesSorted.forEach((axis, i) => {
+                  const z = startZ + (axis.position + mOff.z)
+                  if (z < startZ - 1 || z > endZ + 1) return
                   const isMajor = i % 5 === 0
                   if (isMajor) {
                     positionsMajor.push(startX, 0, z, endX, 0, z)
@@ -1413,12 +1455,8 @@ export const IFCViewer = forwardRef<IFCViewerHandle, IFCViewerProps>(
 
             {/* V-axis labels (numbers) on bottom */}
             <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex flex-row gap-2">
-              {gridData.v_axes
-                .sort((a, b) => {
-                  const numA = parseInt(a.tag) || 0
-                  const numB = parseInt(b.tag) || 0
-                  return numA - numB
-                })
+              {[...gridData.v_axes]
+                .sort((a, b) => a.position - b.position)
                 .map((axis, idx) => {
                   const totalAxes = gridData.v_axes.length
                   const positionPercent = totalAxes > 1 ? (idx / (totalAxes - 1)) * 100 : 50

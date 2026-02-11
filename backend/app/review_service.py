@@ -25,16 +25,16 @@ except ImportError:
     OPENAI_AVAILABLE = False
 
 
-# Construction sequence rules (element types in order)
+# Construction sequence rules (element types in correct structural order)
 CONSTRUCTION_SEQUENCE = [
     "footings",
     "columns",
-    "bracing",
     "beams",
+    "bracing",
     "slabs",
     "walls",
-    "railings",
     "stairs",
+    "railings",
 ]
 
 # Element types that should come before others (safety rules)
@@ -204,40 +204,39 @@ class ReviewService:
         suggestions = []
 
         for zone in zones:
-            # Group stages by element type
-            type_order = {}
+            # Group stages by element type, tracking their earliest sequence_order
+            type_earliest_order = {}
+            type_stages = {}
             for stage in zone.stages:
                 et = stage.element_type.lower()
                 if et in CONSTRUCTION_SEQUENCE:
-                    expected_order = CONSTRUCTION_SEQUENCE.index(et)
-                    if et not in type_order:
-                        type_order[et] = []
-                    type_order[et].append((stage.sequence_order, stage.stage_id))
+                    if et not in type_earliest_order or stage.sequence_order < type_earliest_order[et]:
+                        type_earliest_order[et] = stage.sequence_order
+                    if et not in type_stages:
+                        type_stages[et] = []
+                    type_stages[et].append(stage.stage_id)
 
-            # Check if element types appear in correct order
-            prev_expected = -1
-            prev_type = None
-            for et in CONSTRUCTION_SEQUENCE:
-                if et in type_order:
-                    min_actual_order = min(s[0] for s in type_order[et])
-                    expected = CONSTRUCTION_SEQUENCE.index(et)
-
-                    if expected < prev_expected and prev_type:
+            # Check if actual sequence_orders respect the expected construction order
+            present_types = [et for et in CONSTRUCTION_SEQUENCE if et in type_earliest_order]
+            for i in range(len(present_types)):
+                for j in range(i + 1, len(present_types)):
+                    earlier_type = present_types[i]
+                    later_type = present_types[j]
+                    # earlier_type should come before later_type in construction order
+                    # So its earliest sequence_order should be lower
+                    if type_earliest_order[earlier_type] > type_earliest_order[later_type]:
                         suggestions.append(AISuggestion(
                             id=str(uuid.uuid4())[:8],
                             type="sequence",
                             severity="warning",
                             title=f"Sequence issue in Zone {zone.zone_id}",
-                            description=f"{et.title()} stages appear after {prev_type.title()} stages, but should typically come before.",
-                            affected_stages=[s[1] for s in type_order[et]],
-                            suggestion=f"Consider reordering {et} stages to come before {prev_type} stages for proper construction sequence.",
+                            description=f"{later_type.title()} stages are scheduled before {earlier_type.title()} stages, but {earlier_type.title()} should typically come first.",
+                            affected_stages=type_stages.get(later_type, []),
+                            suggestion=f"Consider reordering so {earlier_type.title()} stages come before {later_type.title()} stages.",
                             auto_fixable=True,
                             status="pending",
                             created_at=datetime.now(),
                         ))
-
-                    prev_expected = expected
-                    prev_type = et
 
         return suggestions
 

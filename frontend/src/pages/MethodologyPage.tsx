@@ -72,7 +72,7 @@ function ZoneCard({
   onSelect: () => void
   onToggleHighlight: () => void
 }) {
-  const zoneColor = ZONE_COLORS[zone.zone_id % 8] || ZONE_COLORS[1]
+  const zoneColor = ZONE_COLORS[((zone.zone_id - 1) % 8) + 1]
   const colorHex = `#${zoneColor.toString(16).padStart(6, '0')}`
 
   return (
@@ -325,7 +325,7 @@ export function MethodologyPage() {
       zones.forEach(zoneId => {
         const ids = expressIdsCache.get(`zone-${zoneId}`)
         if (ids) {
-          const color = ZONE_COLORS[zoneId % 8] || ZONE_COLORS[1]
+          const color = ZONE_COLORS[((zoneId - 1) % 8) + 1]
           viewerRef.current!.highlightElements(ids, color)
         }
       })

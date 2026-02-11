@@ -398,7 +398,7 @@ export function ViewerPage() {
                     All ({analysis?.stages_count || 0})
                   </button>
                   {zones.map((zone) => {
-                    const color = ZONE_COLORS[zone.zone_id % 8] || ZONE_COLORS[1]
+                    const color = ZONE_COLORS[((zone.zone_id - 1) % 8) + 1]
                     const zoneStages = (analysis?.stages || []).filter(s => s.zone_id === zone.zone_id)
                     const zoneHighlightedCount = zoneStages.filter(s => highlightedStages.has(s.stage_id)).length
                     return (
