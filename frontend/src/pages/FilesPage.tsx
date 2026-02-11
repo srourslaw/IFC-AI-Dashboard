@@ -11,7 +11,7 @@ import {
   ChartBarIcon,
 } from '@heroicons/react/24/outline'
 import { Link } from 'react-router-dom'
-import { useFiles, useLoadModel, useUnloadModel, useUploadFile, useDeleteFile, useCurrentModel, useAnalytics, useElementCounts } from '@/hooks/useIFCData'
+import { useFiles, useLoadModel, useUnloadModel, useUploadFile, useDeleteFile, useCurrentModel, useAnalytics, useElementCounts, useLoadingStatus } from '@/hooks/useIFCData'
 import { formatFileSize, formatDate, formatNumber } from '@/lib/utils'
 import { useAppStore } from '@/store/appStore'
 
@@ -20,6 +20,7 @@ export function FilesPage() {
   const { data: filesData, isLoading } = useFiles()
   const { data: analytics } = useAnalytics()
   const { data: elementData } = useElementCounts()
+  const { data: loadingStatus } = useLoadingStatus()
   const loadModel = useLoadModel()
   const unloadModel = useUnloadModel()
   const uploadFile = useUploadFile()
@@ -188,7 +189,7 @@ export function FilesPage() {
             >
               {filesData?.files.map((file) => {
                 const isActive = currentModel?.file_id === file.id
-                const isLoadingThis = loadModel.isPending
+                const isLoadingThis = loadModel.isPending || loadingStatus?.is_loading
                 return (
                   <div
                     key={file.id}
@@ -206,13 +207,16 @@ export function FilesPage() {
                             <span className="badge-success text-xs">Active</span>
                           )}
                           {isLoadingThis && !isActive && (
-                            <span className="text-xs text-blue-500">Loading...</span>
+                            <div className="flex items-center gap-1.5">
+                              <div className="animate-spin rounded-full h-3 w-3 border-2 border-blue-500 border-t-transparent"></div>
+                              <span className="text-xs text-blue-500">Loading model...</span>
+                            </div>
                           )}
                         </div>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                           {formatFileSize(file.size_mb)} • {formatDate(file.modified_at)}
                         </p>
-                        {!isActive && (
+                        {!isActive && !isLoadingThis && (
                           <p className="text-xs text-blue-500 dark:text-blue-400 mt-1">Click to load model</p>
                         )}
                       </div>
@@ -357,6 +361,14 @@ export function FilesPage() {
                   </p>
                 </Link>
               </div>
+            </div>
+          ) : loadingStatus?.is_loading ? (
+            <div className="card p-12 text-center">
+              <div className="animate-spin rounded-full h-12 w-12 border-3 border-blue-600 border-t-transparent mx-auto"></div>
+              <h3 className="text-lg font-medium text-slate-900 dark:text-white mt-4">Loading Model...</h3>
+              <p className="text-slate-500 dark:text-slate-400 text-sm mt-2">
+                Preparing your IFC model. This may take a minute for large files.
+              </p>
             </div>
           ) : (
             <div className="card p-12 text-center">

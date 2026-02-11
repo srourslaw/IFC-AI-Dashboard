@@ -156,7 +156,7 @@ export function useLoadedModels() {
 }
 
 export function useCurrentModel() {
-  const setCurrentModel = useAppStore((state) => state.setCurrentModel)
+  const { currentModel, setCurrentModel } = useAppStore()
 
   return useQuery({
     queryKey: queryKeys.currentModel,
@@ -169,6 +169,19 @@ export function useCurrentModel() {
       }
       return data
     },
+    // Poll every 3 seconds when no model is loaded (waiting for auto-load to finish)
+    refetchInterval: currentModel ? false : 3000,
+  })
+}
+
+export function useLoadingStatus() {
+  return useQuery({
+    queryKey: ['loadingStatus'],
+    queryFn: async () => {
+      const data = await api.getLoadingStatus()
+      return data.data
+    },
+    refetchInterval: 2000,
   })
 }
 

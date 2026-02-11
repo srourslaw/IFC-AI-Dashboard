@@ -50,6 +50,7 @@ class IFCService:
         self._loaded_models: Dict[str, LoadedModel] = {}
         self._current_model_id: Optional[str] = None
         self._hidden_files: Set[str] = set()  # Files removed from UI (but not deleted from disk)
+        self.is_loading: bool = False
 
     # ========================================================================
     # File Management
@@ -110,23 +111,27 @@ class IFCService:
             self._current_model_id = file_id
             return file_id, self._loaded_models[file_id]
 
-        # Load the IFC file
-        ifc = ifcopenshell.open(str(path))
-        stat = path.stat()
+        # Load the IFC file (this is blocking I/O - caller should use asyncio.to_thread)
+        self.is_loading = True
+        try:
+            ifc = ifcopenshell.open(str(path))
+            stat = path.stat()
 
-        model = LoadedModel(
-            file_id=file_id,
-            file_path=str(path),
-            file_name=path.name,
-            ifc=ifc,
-            loaded_at=datetime.now(),
-            size_mb=round(stat.st_size / (1024 * 1024), 2),
-        )
+            model = LoadedModel(
+                file_id=file_id,
+                file_path=str(path),
+                file_name=path.name,
+                ifc=ifc,
+                loaded_at=datetime.now(),
+                size_mb=round(stat.st_size / (1024 * 1024), 2),
+            )
 
-        self._loaded_models[file_id] = model
-        self._current_model_id = file_id
+            self._loaded_models[file_id] = model
+            self._current_model_id = file_id
 
-        return file_id, model
+            return file_id, model
+        finally:
+            self.is_loading = False
 
     def unload_model(self, file_id: str) -> bool:
         """Unload a model from memory."""

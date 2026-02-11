@@ -351,6 +351,11 @@ class APIClient {
     return data
   }
 
+  async getLoadingStatus(): Promise<APIResponse<{ is_loading: boolean; has_model: boolean; model_name: string | null }>> {
+    const { data } = await this.client.get('/files/loading-status')
+    return data
+  }
+
   // ===========================================================================
   // Storeys
   // ===========================================================================

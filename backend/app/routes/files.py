@@ -1,6 +1,7 @@
 """
 File management API routes.
 """
+import asyncio
 import os
 import shutil
 from typing import Optional
@@ -91,14 +92,38 @@ async def delete_file(file_id: str):
 @router.post("/{file_id}/load", response_model=APIResponse)
 async def load_file(file_id: str):
     """Load an IFC file into memory."""
+    # If already loading a model, return status
+    if ifc_service.is_loading:
+        return APIResponse(
+            success=True,
+            message="A model is currently being loaded, please wait...",
+            data={"status": "loading"},
+        )
+
     files = ifc_service.get_available_files()
     file_info = next((f for f in files if f.id == file_id), None)
 
     if not file_info:
         raise HTTPException(status_code=404, detail="File not found")
 
+    # Return cached model immediately if already loaded
+    if file_id in ifc_service._loaded_models:
+        ifc_service._current_model_id = file_id
+        model = ifc_service._loaded_models[file_id]
+        return APIResponse(
+            success=True,
+            message=f"Model {model.file_name} is already loaded",
+            data={
+                "file_id": file_id,
+                "file_name": model.file_name,
+                "size_mb": model.size_mb,
+                "loaded_at": model.loaded_at.isoformat(),
+            },
+        )
+
     try:
-        loaded_id, model = ifc_service.load_model(file_info.path)
+        # Run blocking ifcopenshell.open() in a thread pool to avoid blocking the event loop
+        loaded_id, model = await asyncio.to_thread(ifc_service.load_model, file_info.path)
         return APIResponse(
             success=True,
             message=f"Successfully loaded {model.file_name}",
@@ -119,6 +144,21 @@ async def unload_file(file_id: str):
     if ifc_service.unload_model(file_id):
         return APIResponse(success=True, message="Model unloaded successfully")
     raise HTTPException(status_code=404, detail="Model not found or not loaded")
+
+
+@router.get("/loading-status", response_model=APIResponse)
+async def get_loading_status():
+    """Check if a model is currently being loaded."""
+    model = ifc_service.get_current_model()
+    return APIResponse(
+        success=True,
+        message="Loading" if ifc_service.is_loading else ("Ready" if model else "No model"),
+        data={
+            "is_loading": ifc_service.is_loading,
+            "has_model": model is not None,
+            "model_name": model.file_name if model else None,
+        },
+    )
 
 
 @router.get("/loaded", response_model=APIResponse)

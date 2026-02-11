@@ -2,6 +2,9 @@
 IFC AI POC - Enterprise API Server
 Main FastAPI application entry point.
 """
+import asyncio
+import logging
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -11,11 +14,41 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import settings
+from .ifc_service import ifc_service
 from .models import HealthCheck
 from .routes import analytics, elements, exports, files, storeys, takeoffs, methodology, review
 
+logger = logging.getLogger(__name__)
+
 # Frontend static build directory (built by CI/CD pipeline)
 FRONTEND_DIR = Path(__file__).parent.parent.parent / "frontend" / "dist"
+
+
+# =============================================================================
+# Startup: Auto-load IFC model
+# =============================================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Auto-load the first available IFC file at startup for instant demo access."""
+    asyncio.create_task(_auto_load_model())
+    yield
+
+
+async def _auto_load_model():
+    """Load the first IFC file in a background thread so the server stays responsive."""
+    try:
+        available = ifc_service.get_available_files()
+        if available:
+            first_file = available[0]
+            logger.info(f"Auto-loading IFC model: {first_file.name} ({first_file.size_mb} MB)")
+            await asyncio.to_thread(ifc_service.load_model, first_file.path)
+            logger.info(f"Model loaded successfully: {first_file.name}")
+        else:
+            logger.info("No IFC files found in uploads directory, skipping auto-load")
+    except Exception as e:
+        logger.error(f"Failed to auto-load model: {e}")
+
 
 # =============================================================================
 # Application Setup
@@ -28,6 +61,7 @@ app = FastAPI(
     docs_url="/api/docs",
     redoc_url="/api/redoc",
     openapi_url="/api/openapi.json",
+    lifespan=lifespan,
 )
 
 # =============================================================================
