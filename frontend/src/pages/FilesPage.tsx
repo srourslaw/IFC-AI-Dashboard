@@ -189,10 +189,12 @@ export function FilesPage() {
             >
               {filesData?.files.map((file) => {
                 const isActive = currentModel?.file_id === file.id
+                const isLoadingThis = loadModel.isPending
                 return (
                   <div
                     key={file.id}
-                    className={`p-4 group ${isActive ? 'bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}
+                    onClick={() => !isActive && !isLoadingThis && handleLoad(file.id)}
+                    className={`p-4 group cursor-pointer ${isActive ? 'bg-blue-50 dark:bg-blue-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'}`}
                   >
                     <div className="flex items-start gap-3">
                       <div className={`p-2 rounded-lg ${isActive ? 'bg-blue-100 dark:bg-blue-900/50' : 'bg-slate-100 dark:bg-slate-700'}`}>
@@ -204,15 +206,21 @@ export function FilesPage() {
                           {isActive && (
                             <span className="badge-success text-xs">Active</span>
                           )}
+                          {isLoadingThis && !isActive && (
+                            <span className="text-xs text-blue-500">Loading...</span>
+                          )}
                         </div>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
                           {formatFileSize(file.size_mb)} • {formatDate(file.modified_at)}
                         </p>
+                        {!isActive && (
+                          <p className="text-xs text-blue-500 dark:text-blue-400 mt-1">Click to load model</p>
+                        )}
                       </div>
-                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex items-center gap-1">
                         {isActive ? (
                           <button
-                            onClick={() => handleUnload(file.id)}
+                            onClick={(e) => { e.stopPropagation(); handleUnload(file.id) }}
                             disabled={unloadModel.isPending}
                             className="p-1.5 rounded-lg text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-600"
                             title="Close"
@@ -220,24 +228,14 @@ export function FilesPage() {
                             <XMarkIcon className="h-4 w-4" />
                           </button>
                         ) : (
-                          <>
-                            <button
-                              onClick={() => handleLoad(file.id)}
-                              disabled={loadModel.isPending}
-                              className="p-1.5 rounded-lg text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50"
-                              title="Load"
-                            >
-                              <PlayIcon className="h-4 w-4" />
-                            </button>
-                            <button
-                              onClick={(e) => handleDelete(file.id, e)}
-                              disabled={deleteFile.isPending}
-                              className="p-1.5 rounded-lg text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30"
-                              title="Remove"
-                            >
-                              <TrashIcon className="h-4 w-4" />
-                            </button>
-                          </>
+                          <button
+                            onClick={(e) => handleDelete(file.id, e)}
+                            disabled={deleteFile.isPending}
+                            className="p-1.5 rounded-lg text-slate-500 hover:text-red-600 dark:text-slate-400 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 opacity-0 group-hover:opacity-100 transition-opacity"
+                            title="Remove"
+                          >
+                            <TrashIcon className="h-4 w-4" />
+                          </button>
                         )}
                       </div>
                     </div>
